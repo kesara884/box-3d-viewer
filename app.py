@@ -1697,7 +1697,9 @@ def compute_stage2_numpy_box_bounds(model: Dict[str, Any], fold_progress: float 
         if parent_id == "side_b" and panel_id == "back":
             return np.array([float(parent["x1"] - parent["x0"]), 0.0, 0.0], dtype=float)
         if parent_id == "back" and panel_id == "glue":
-            return np.array([float(parent["x1"] - parent["x0"]), 0.0, 0.0], dtype=float)
+            front_w = float(panel_by_id["front"]["x1"] - panel_by_id["front"]["x0"])
+            glue_offset = (float(parent["x1"] - parent["x0"]) - (front_w - 0.20)) * p_wall
+            return np.array([float(parent["x1"] - parent["x0"] - glue_offset), 0.0, 0.0], dtype=float)
         return np.array([0.0, 0.0, 0.0], dtype=float)
 
     def local_vertices(panel_id: str) -> np.ndarray:
@@ -1827,6 +1829,10 @@ def compute_panel_outward_normals(model: Dict[str, Any], fold_progress: float = 
         parent = panel_by_id[parent_id]
         if parent_id == "front" and panel_id == "side_a":
             return np.array([0.0, 0.0, 0.0], dtype=float)
+        if parent_id == "back" and panel_id == "glue":
+            front_w = float(panel_by_id["front"]["x1"] - panel_by_id["front"]["x0"])
+            glue_offset = (float(parent["x1"] - parent["x0"]) - (front_w - 0.20)) * fold_progress
+            return np.array([float(parent["x1"] - parent["x0"] - glue_offset), 0.0, 0.0], dtype=float)
         return np.array([float(parent["x1"] - parent["x0"]), 0.0, 0.0], dtype=float)
 
     def rot_y(theta: float) -> np.ndarray:
@@ -1862,6 +1868,7 @@ def compute_panel_outward_normals(model: Dict[str, Any], fold_progress: float = 
 
     all_pts = []
     panel_centers = {}
+    panel_corners = {}
     panel_normals = {}
 
     for panel in panels:
@@ -1876,8 +1883,10 @@ def compute_panel_outward_normals(model: Dict[str, Any], fold_progress: float = 
         T = transform_for(pid)
         w_corners = (T @ corners.T).T[:, :3]
         all_pts.extend(w_corners)
+        panel_corners[pid] = w_corners
         panel_centers[pid] = w_corners.mean(axis=0)
-        n = (T @ np.array([0.0, 0.0, 1.0, 0.0], dtype=float))[:3]
+        local_n = np.array([0.0, 0.0, -1.0 if pid == "glue" else 1.0, 0.0], dtype=float)
+        n = (T @ local_n)[:3]
         panel_normals[pid] = n / np.linalg.norm(n)
 
     pts = np.asarray(all_pts, dtype=float)
@@ -1888,14 +1897,145 @@ def compute_panel_outward_normals(model: Dict[str, Any], fold_progress: float = 
         pid = panel["id"]
         c = panel_centers[pid]
         n = panel_normals[pid]
-        disp = c - box_center
+        disp = (box_center - c) if pid == "glue" else (c - box_center)
         dot = float(np.dot(n, disp))
         results[pid] = {
             "center": c.tolist(),
+            "corners": panel_corners[pid].tolist(),
+            "box_center": box_center.tolist(),
             "normal": n.tolist(),
             "disp": disp.tolist(),
             "dot": dot,
             "is_outward": dot > 0.0,
+        }
+    return results
+
+
+def compute_flap_outward_normals(model: Dict[str, Any], fold_progress: float = 1.0, flip: bool = False) -> Dict[str, Dict[str, Any]]:
+    """Compute world normals, centroids, and dot products with displacement from box center for all flaps.
+
+    Also reports distance to box central vertical axis and whether each flap moves inward vs flat state (progress=0.0).
+    """
+    panels = model["panels"]
+    flaps = model.get("flaps", [])
+    panel_by_id = {panel["id"]: panel for panel in panels}
+    flap_by_id = {flap["id"]: flap for flap in flaps}
+
+    def remap_p(p: float, start: float, end: float) -> float:
+        return float(np.clip((p - start) / (end - start), 0.0, 1.0))
+
+    def get_transforms(prog: float, is_flipped: bool):
+        p_wall = remap_p(prog, 0.0, 0.5)
+        p_dust = remap_p(prog, 0.5, 0.7)
+        p_tuck = remap_p(prog, 0.7, 1.0)
+
+        def hinge_position(panel_id: str) -> np.ndarray:
+            parent_id = panel_by_id[panel_id]["parent"]
+            if parent_id is None:
+                return np.array([0.0, 0.0, 0.0], dtype=float)
+            parent = panel_by_id[parent_id]
+            if parent_id == "front" and panel_id == "side_a":
+                return np.array([0.0, 0.0, 0.0], dtype=float)
+            if parent_id == "back" and panel_id == "glue":
+                front_w = float(panel_by_id["front"]["x1"] - panel_by_id["front"]["x0"])
+                glue_offset = (float(parent["x1"] - parent["x0"]) - (front_w - 0.20)) * p_wall
+                return np.array([float(parent["x1"] - parent["x0"] - glue_offset), 0.0, 0.0], dtype=float)
+            return np.array([float(parent["x1"] - parent["x0"]), 0.0, 0.0], dtype=float)
+
+        def panel_T(panel_id: str) -> np.ndarray:
+            p = panel_by_id[panel_id]
+            if p["parent"] is None:
+                return np.eye(4, dtype=float)
+            parent_transform = panel_T(p["parent"])
+            hinge = hinge_position(panel_id)
+            sign = -1.0 if panel_id == "side_a" else 1.0
+            if is_flipped:
+                sign *= -1.0
+            theta = sign * p_wall * (np.pi / 2.0)
+            c, s = np.cos(theta), np.sin(theta)
+            R = np.array([[c, 0.0, s, 0.0], [0.0, 1.0, 0.0, 0.0], [-s, 0.0, c, 0.0], [0.0, 0.0, 0.0, 1.0]], dtype=float)
+            Tr = np.array([[1.0, 0.0, 0.0, hinge[0]], [0.0, 1.0, 0.0, hinge[1]], [0.0, 0.0, 1.0, hinge[2]], [0.0, 0.0, 0.0, 1.0]], dtype=float)
+            return parent_transform @ Tr @ R
+
+        def flap_T(fid: str) -> np.ndarray:
+            f = flap_by_id[fid]
+            pr = f["parent"]
+            parent_transform = panel_T(pr) if pr in panel_by_id else flap_T(pr)
+            piv = f["pivot_position"]
+            sign = float(f.get("sign", 1.0))
+            if is_flipped:
+                sign *= -1.0
+            sub_p = remap_p(prog, 0.7, 0.95) if fid == "top_tuck" else (p_dust if f.get("kind") == "dust" else p_tuck)
+            theta = sign * sub_p * (np.pi / 2.0)
+            c, s = np.cos(theta), np.sin(theta)
+            Rx = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, c, -s, 0.0], [0.0, s, c, 0.0], [0.0, 0.0, 0.0, 1.0]], dtype=float)
+            Tr = np.array([[1.0, 0.0, 0.0, piv[0]], [0.0, 1.0, 0.0, piv[1]], [0.0, 0.0, 1.0, piv[2]], [0.0, 0.0, 0.0, 1.0]], dtype=float)
+            return parent_transform @ Tr @ Rx
+
+        return panel_T, flap_T
+
+    pT_now, flapT_now = get_transforms(fold_progress, flip)
+    corners_all = []
+    for p in panels:
+        pid = p["id"]
+        x0, x1, h = p["x0"], p["x1"], p["height"]
+        corners = np.array([[x0, 0.0, 0.0, 1.0], [x1, 0.0, 0.0, 1.0], [x1, h, 0.0, 1.0], [x0, h, 0.0, 1.0]], dtype=float)
+        corners_all.extend((pT_now(pid) @ corners.T).T[:, :3])
+    pts = np.asarray(corners_all, dtype=float)
+    box_center = (pts.min(axis=0) + pts.max(axis=0)) / 2.0
+    axis_c = box_center[[0, 2]]
+
+    _, flapT_0 = get_transforms(0.0, False)
+    _, flapT_05 = get_transforms(0.5, flip)
+    _, flapT_07 = get_transforms(0.7, flip)
+
+    results = {}
+    for flap in flaps:
+        fid = flap["id"]
+        poly = flap.get("polygon", [])
+        if not poly:
+            continue
+        local_pts = np.array([[pt[0], pt[1], 0.0, 1.0] for pt in poly], dtype=float)
+
+        c0 = (flapT_0(fid) @ local_pts.T).T[:, :3].mean(axis=0)
+        c05 = (flapT_05(fid) @ local_pts.T).T[:, :3].mean(axis=0)
+        c07 = (flapT_07(fid) @ local_pts.T).T[:, :3].mean(axis=0)
+
+        T_now = flapT_now(fid)
+        c_now = (T_now @ local_pts.T).T[:, :3].mean(axis=0)
+        n = (T_now @ np.array([0.0, 0.0, 1.0, 0.0], dtype=float))[:3]
+        n = n / np.linalg.norm(n)
+
+        disp = c_now - box_center
+        dot = float(np.dot(n, disp))
+
+        d0 = float(np.linalg.norm(c0[[0, 2]] - axis_c))
+        d05 = float(np.linalg.norm(c05[[0, 2]] - axis_c))
+        d07 = float(np.linalg.norm(c07[[0, 2]] - axis_c))
+        d_now = float(np.linalg.norm(c_now[[0, 2]] - axis_c))
+
+        m05 = "inward" if d05 <= d0 + 1e-3 else "outward"
+        m07 = "inward" if d07 <= d05 + 1e-3 else "outward"
+        movement = "inward" if d_now < d0 else "outward"
+
+        results[fid] = {
+            "sign": float(flap.get("sign", 1.0)),
+            "axis": "local X",
+            "centroid": c_now.tolist(),
+            "centroid_p0": c0.tolist(),
+            "centroid_p05": c05.tolist(),
+            "centroid_p07": c07.tolist(),
+            "normal": n.tolist(),
+            "disp": disp.tolist(),
+            "dot": dot,
+            "is_outward": dot > 0.0,
+            "d_axis_p0": d0,
+            "d_axis_p05": d05,
+            "d_axis_p07": d07,
+            "d_axis_now": d_now,
+            "movement_at_p05": m05,
+            "movement_at_p07": m07,
+            "movement_vs_p0": movement,
         }
     return results
 
@@ -2225,6 +2365,16 @@ def make_viewer_html(model: Dict[str, Any]) -> str:
               const y1 = panel.height * scale;
 
               const shape = new THREE.Shape();
+              if (panel.id === 'glue') {
+                shape.moveTo(x0, 0);
+                shape.lineTo(x0, y1);
+                shape.lineTo(x1, y1);
+                shape.lineTo(x1, 0);
+                shape.closePath();
+                const geometry = new THREE.ShapeGeometry(shape);
+                normalizeUVs(geometry);
+                return createTexturedFaceGroup(geometry, null, 0xd8c7a6);
+              }
               shape.moveTo(x0, 0);
               shape.lineTo(x1, 0);
               shape.lineTo(x1, y1);
@@ -2373,6 +2523,10 @@ def make_viewer_html(model: Dict[str, Any]) -> str:
                 if (panelId === 'front') return;
                 const node = panelNodes[panelId];
                 if (!node) return;
+                if (panelId === 'glue') {
+                  const glueOffset = (panelWidth('back') - (frontWidth - 0.20 * scale)) * pWall;
+                  node.position.x = panelWidth('back') - glueOffset;
+                }
                 let sign = (panelId === 'side_a') ? -1 : 1;
                 if (globalFlip) sign *= -1;
                 node.rotation.y = sign * pWall * (Math.PI / 2);

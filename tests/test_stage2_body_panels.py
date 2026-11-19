@@ -9,6 +9,7 @@ import numpy as np
 from app import (
     build_stage1_box_geometry,
     build_stage2_body_panel_model,
+    compute_flap_outward_normals,
     compute_panel_outward_normals,
     compute_stage2_numpy_box_bounds,
 )
@@ -253,6 +254,97 @@ def test_stage4_flap_closing_bounds_and_tuck() -> None:
     assert abs(closed_size[0] - 50.42) < 1.0
     assert abs(closed_size[1] - 120.66) < 1.0
     assert abs(closed_size[2] - 180.00) < 1.0
+
+
+def test_stage4_flap_fold_direction_and_normals() -> None:
+    doc = fitz.open(str(PDF_PATH))
+    page = doc[0]
+    box = build_stage1_box_geometry(page, doc)
+    model = build_stage2_body_panel_model(box, page=page, dpi=200)
+
+    # 1. Flip OFF (default closed carton): all flap printed faces point outward (dot > 0)
+    data = compute_flap_outward_normals(model, fold_progress=1.0, flip=False)
+    expected_ids = [
+        "side_a_top", "side_a_bottom",
+        "front_top", "top_tuck", "front_bottom",
+        "side_b_top", "side_b_bottom",
+        "back_bottom"
+    ]
+    assert list(data.keys()) == expected_ids
+
+    print("\n--- FLAP DIRECTION TABLE (Flip OFF) ---")
+    print(f"{'Flap ID':15s} | {'Sign':4s} | {'Axis':7s} | {'Dot':6s} | {'p=0.5':7s} | {'p=0.7':7s} | {'In/Out'}")
+    print("-" * 75)
+    for fid, f in data.items():
+        print(f"{fid:15s} | {f['sign']:4.1f} | {f['axis']:7s} | {f['dot']:6.2f} | {f['movement_at_p05']:7s} | {f['movement_at_p07']:7s} | {f['movement_vs_p0']}")
+        # All flaps must point outward (dot > 0)
+        assert f["dot"] > 0.0, f"Flap {fid} dot product {f['dot']} <= 0 (not pointing outward)"
+        # All flaps must fold inward toward the box center axis
+        assert f["movement_vs_p0"] == "inward", f"Flap {fid} did not fold inward (moved outward)"
+
+    # 2. Flip ON: all flap printed faces point inward (dot < 0)
+    flip_data = compute_flap_outward_normals(model, fold_progress=1.0, flip=True)
+    for fid, f in flip_data.items():
+        assert f["dot"] < 0.0, f"Flip ON flap {fid} dot product {f['dot']} >= 0 (must point inward)"
+
+    # 3. Closed bbox check
+    closed = compute_stage2_numpy_box_bounds(model, fold_progress=1.0)
+    closed_size = closed["size_mm"]
+    assert abs(closed_size[0] - 50.42) < 1.0
+    assert abs(closed_size[1] - 120.66) < 1.0
+    assert abs(closed_size[2] - 180.00) < 1.0
+
+
+def test_stage4_glue_panel_inside_side_a() -> None:
+    doc = fitz.open(str(PDF_PATH))
+    page = doc[0]
+    box = build_stage1_box_geometry(page, doc)
+    model = build_stage2_body_panel_model(box, page=page, dpi=200)
+
+    # 1. At progress=1 compute the world position of the glue panel (all 4 corners) and side_a
+    normals_data = compute_panel_outward_normals(model, fold_progress=1.0, flip=False)
+    glue_data = normals_data["glue"]
+    side_a_data = normals_data["side_a"]
+
+    glue_corners = np.array(glue_data["corners"], dtype=float)
+    side_a_corners = np.array(side_a_data["corners"], dtype=float)
+    box_center = np.array(glue_data["box_center"], dtype=float)
+
+    # a) glue lies INSIDE the box bbox in X, i.e. its x range is strictly between side_a's outer plane and the box centre
+    outer_plane_x = float(side_a_corners[:, 0].max())
+    print(f"\nglue X range: [{glue_corners[:, 0].min():.2f}, {glue_corners[:, 0].max():.2f}], outer_plane_x={outer_plane_x:.2f}, box_center_x={box_center[0]:.2f}")
+    assert glue_corners[:, 0].min() > outer_plane_x, f"glue X min {glue_corners[:, 0].min()} <= {outer_plane_x}"
+    assert glue_corners[:, 0].max() < box_center[0], f"glue X max {glue_corners[:, 0].max()} >= {box_center[0]}"
+    assert glue_corners[:, 2].min() >= -50.42 - 1e-3 and glue_corners[:, 2].max() <= 0.0 + 1e-3
+
+    # b) glue's centre is closer to the box centre than side_a's centre is (inside, behind side_a)
+    c_glue_x = float(glue_corners[:, 0].mean())
+    c_side_a_x = float(side_a_corners[:, 0].mean())
+    print(f"X dist to box center: glue={abs(box_center[0] - c_glue_x):.2f}, side_a={abs(box_center[0] - c_side_a_x):.2f}")
+    assert abs(box_center[0] - c_glue_x) < abs(box_center[0] - c_side_a_x)
+
+    # c) the gap between glue and side_a's inner surface is small (<= 1 mm, tiny offset to avoid z-fighting)
+    gap = abs(c_glue_x - outer_plane_x)
+    print(f"gap between glue and side_a inner surface: {gap:.2f} mm")
+    assert gap <= 1.0
+
+    # d) glue's printed normal points toward the box centre or away from side_a's outer face (hidden from outside view)
+    n_glue = np.array(glue_data["normal"], dtype=float)
+    n_side_a = np.array(side_a_data["normal"], dtype=float)
+    dot_box = float(np.dot(n_glue, box_center - glue_corners.mean(axis=0)))
+    dot_side_a = float(np.dot(n_glue, -n_side_a))
+    print(f"glue normal: {n_glue}, dot_box={dot_box:.2f}, dot_away_from_side_a={dot_side_a:.2f}")
+    assert dot_box > 0.0, f"glue normal {n_glue} does not point toward box center"
+    assert dot_side_a > 0.0, f"glue normal {n_glue} does not point away from side_a outer face"
+
+    # Flip toggle check: with flip=True, glue still sits inside side_a
+    flip_normals = compute_panel_outward_normals(model, fold_progress=1.0, flip=True)
+    glue_flip = np.array(flip_normals["glue"]["corners"], dtype=float)
+    side_a_flip = np.array(flip_normals["side_a"]["corners"], dtype=float)
+    outer_x_flip = float(side_a_flip[:, 0].max())
+    assert glue_flip[:, 0].min() > outer_x_flip
+
+
 
 
 
