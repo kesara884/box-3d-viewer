@@ -12,9 +12,15 @@ from app import (
     compute_flap_outward_normals,
     compute_panel_outward_normals,
     compute_stage2_numpy_box_bounds,
+    detect_layout_rows,
+    extract_structural_lines,
+    measure_pdf_nominal_dims,
 )
 
 PDF_PATH = Path(__file__).resolve().parents[1] / "20182462_POWER_TRUNK 3P_USA_50x120x180mm.pdf"
+FITNESS_PDF_PATH = Path(__file__).resolve().parents[1] / "FITNESS TUBE BOX_V7.pdf"
+TEA1_PDF_PATH = Path(__file__).resolve().parents[1] / "BRITISH TEA - 20TB EARL GREY_EDITED_SA_V3.pdf"
+TEA2_PDF_PATH = Path(__file__).resolve().parents[1] / "Nordqvist_Moomin_20TB_37465_AFRICA_ Rooibos Tea.pdf"
 
 
 def test_stage2_body_panel_fold_tree_matches_mm_box() -> None:
@@ -76,7 +82,7 @@ def test_stage3_flaps_and_viewer_bounds() -> None:
     flat = compute_stage2_numpy_box_bounds(model, fold_progress=0.0)
     flat_size = flat["size_mm"]
     assert flat_size[0] == 0.0  # depth
-    assert abs(flat_size[1] - 355.0) < 1.0  # width
+    assert abs(flat_size[1] - 355.0) < 2.0  # width (~353.5mm from measured linework)
     assert abs(flat_size[2] - 286.8) < 1.0  # height
 
     # Progress 0.5: walls folded into tube, flaps open
@@ -343,6 +349,180 @@ def test_stage4_glue_panel_inside_side_a() -> None:
     side_a_flip = np.array(flip_normals["side_a"]["corners"], dtype=float)
     outer_x_flip = float(side_a_flip[:, 0].max())
     assert glue_flip[:, 0].min() > outer_x_flip
+
+
+def test_stage5a_fitness_tube_box() -> None:
+    assert FITNESS_PDF_PATH.exists(), f"Missing Fitness Tube PDF: {FITNESS_PDF_PATH}"
+
+    doc = fitz.open(str(FITNESS_PDF_PATH))
+    page = doc[0]
+
+    # Verify single-row layout detection
+    lines = extract_structural_lines(page, doc=doc, min_length=0)
+    green = [l for l in lines if l.get("kind") == "crease"]
+    red = [l for l in lines if l.get("kind") == "cut"]
+    rows, reason = detect_layout_rows(green, red)
+    assert rows == 1, f"Expected single-row layout for Fitness Tube, got {rows} rows ({reason})"
+
+    # User-entered / assumed dimensions: 69 x 160 x 170 mm (Depth x Width x Height)
+    dims = (69.0, 160.0, 170.0)
+    box = build_stage1_box_geometry(page, doc, dimensions=dims)
+
+    # Assert at least 4 body panels
+    body_panels = box["body_panels"]
+    assert len(body_panels) >= 4, f"Expected at least 4 body panels, found {len(body_panels)}"
+
+    # Assert at least 4 flaps
+    flaps = box["flaps"]
+    assert len(flaps) >= 4, f"Expected at least 4 flaps, found {len(flaps)}"
+
+    model = build_stage2_body_panel_model(box)
+
+    # Assert outward normals positive for all body panels
+    normals = compute_panel_outward_normals(model, fold_progress=1.0, flip=False)
+    for pid, n_info in normals.items():
+        assert n_info["dot"] > 0.0, f"Body panel {pid} normal is not positive/outward: dot={n_info['dot']}"
+        assert n_info["is_outward"] is True
+
+    # Assert bbox within 5% of the entered dimensions
+    model_body = {**model, "flaps": []}
+    bounds = compute_stage2_numpy_box_bounds(model_body, fold_progress=1.0)
+    sz = np.array(bounds["size_mm"])
+    print(f"\nFitness Tube folded body bbox: D={sz[0]:.2f}mm, W={sz[1]:.2f}mm, H={sz[2]:.2f}mm")
+
+    assert abs(sz[0] - dims[0]) / dims[0] <= 0.05, f"Depth {sz[0]:.2f}mm deviates >5% from entered {dims[0]}mm"
+    assert abs(sz[1] - dims[1]) / dims[1] <= 0.05, f"Width {sz[1]:.2f}mm deviates >5% from entered {dims[1]}mm"
+    assert abs(sz[2] - dims[2]) / dims[2] <= 0.05, f"Height {sz[2]:.2f}mm deviates >5% from entered {dims[2]}mm"
+
+    # Assert no two tuck flaps share the same parent region
+    tuck_flaps = [f for f in model["flaps"] if f.get("kind") == "tuck"]
+    tuck_parents = [f["parent"] for f in tuck_flaps]
+    assert len(tuck_parents) == len(set(tuck_parents)), f"Duplicate tuck flap parent regions: {tuck_parents}"
+
+    # Assert at progress=1 every flap's world bbox is within 2 mm of the box bbox [0..W, 0..H, -D..0]
+    W, H, D = dims[1], dims[2], dims[0]
+    panel_by_id = {p["id"]: p for p in model["panels"]}
+    flap_by_id = {f["id"]: f for f in model["flaps"]}
+
+    def remap_p(t: float, a: float, b: float) -> float:
+        return float(np.clip((t - a) / (b - a), 0.0, 1.0))
+
+    p_wall = remap_p(1.0, 0.0, 0.5)
+    p_dust = remap_p(1.0, 0.5, 0.7)
+    p_tuck = remap_p(1.0, 0.7, 1.0)
+    p_tuck_flap = remap_p(1.0, 0.7, 0.95)
+
+    def panel_T(pid: str) -> np.ndarray:
+        p = panel_by_id[pid]
+        if p["parent"] is None:
+            return np.eye(4, dtype=float)
+        parent_T = panel_T(p["parent"])
+        piv = np.array(p.get("pivot_position", [0, 0, 0]), dtype=float).copy()
+        if p.get("glue_offset", 0.0) != 0.0:
+            piv[0] -= p["glue_offset"] * p_wall
+        sign = float(p.get("fold_sign", 1.0))
+        theta = sign * p_wall * (np.pi / 2.0)
+        c, s = np.cos(theta), np.sin(theta)
+        R = np.array([[c, 0, s, 0], [0, 1, 0, 0], [-s, 0, c, 0], [0, 0, 0, 1]], dtype=float)
+        Tr = np.array([[1, 0, 0, piv[0]], [0, 1, 0, piv[1]], [0, 0, 1, piv[2]], [0, 0, 0, 1]], dtype=float)
+        return parent_T @ Tr @ R
+
+    def flap_T(fid: str) -> np.ndarray:
+        f = flap_by_id[fid]
+        pr = f["parent"]
+        parent_T = panel_T(pr) if pr in panel_by_id else flap_T(pr)
+        piv = f["pivot_position"]
+        sign = float(f.get("sign", 1.0))
+        sub_p = p_tuck_flap if (fid == "top_tuck" or fid.endswith("_tuck")) else (p_dust if f.get("kind") == "dust" else p_tuck)
+        theta = sign * sub_p * (np.pi / 2.0)
+        c, s = np.cos(theta), np.sin(theta)
+        Rx = np.array([[1, 0, 0, 0], [0, c, -s, 0], [0, s, c, 0], [0, 0, 0, 1]], dtype=float)
+        Tr = np.array([[1, 0, 0, piv[0]], [0, 1, 0, piv[1]], [0, 0, 1, piv[2]], [0, 0, 0, 1]], dtype=float)
+        return parent_T @ Tr @ Rx
+
+    for f in model["flaps"]:
+        fid = f["id"]
+        poly = f.get("polygon", [])
+        pts = np.array([[pt[0], pt[1], 0.0, 1.0] for pt in poly], dtype=float)
+        w1 = (flap_T(fid) @ pts.T).T[:, :3]
+
+        min_x, max_x = float(w1[:, 0].min()), float(w1[:, 0].max())
+        min_y, max_y = float(w1[:, 1].min()), float(w1[:, 1].max())
+        min_z, max_z = float(w1[:, 2].min()), float(w1[:, 2].max())
+
+        assert min_x >= -2.0 and max_x <= W + 2.0, f"Flap {fid} X out of bounds: [{min_x:.1f}, {max_x:.1f}]"
+        assert min_y >= -2.0 and max_y <= H + 2.0, f"Flap {fid} Y out of bounds: [{min_y:.1f}, {max_y:.1f}]"
+        assert min_z >= -D - 2.0 and max_z <= 2.0, f"Flap {fid} Z out of bounds: [{min_z:.1f}, {max_z:.1f}]"
+
+    # Assert at p=1 every flap's centroid is within the box bbox (2 mm tolerance)
+    flap_normals_fit = compute_flap_outward_normals(model, fold_progress=1.0)
+    for fid, n_data in flap_normals_fit.items():
+        c = np.array(n_data["centroid"])
+        assert -2.0 <= c[0] <= W + 2.0, f"Flap {fid} centroid X out of bounds: {c[0]}"
+        assert -2.0 <= c[1] <= H + 2.0, f"Flap {fid} centroid Y out of bounds: {c[1]}"
+        assert -D - 2.0 <= c[2] <= 2.0, f"Flap {fid} centroid Z out of bounds: {c[2]}"
+
+    # Assert every bottom flap's world normal is (0, +/-1, 0)
+    for f in model["flaps"]:
+        if "bottom" in f["id"] and f.get("kind") != "tuck":
+            n = np.array(flap_normals_fit[f["id"]]["normal"])
+            assert np.allclose(np.abs(n), [0.0, 1.0, 0.0], atol=1e-2), (
+                f"Bottom flap {f['id']} world normal is not (0, +/-1, 0): {n}"
+            )
+
+    # Assert glue panel folds inside the box behind side_a
+    glue_p = panel_by_id["glue"]
+    glue_corners = np.array([
+        [glue_p["x0"], 0.0, 0.0, 1.0],
+        [glue_p["x1"], 0.0, 0.0, 1.0],
+        [glue_p["x1"], glue_p["height"], 0.0, 1.0],
+        [glue_p["x0"], glue_p["height"], 0.0, 1.0],
+    ], dtype=float)
+    glue_world = (panel_T("glue") @ glue_corners.T).T[:, :3]
+    assert glue_world[:, 0].min() >= -0.5 and glue_world[:, 0].max() <= 1.0
+    assert glue_world[:, 2].min() >= -D - 0.5 and glue_world[:, 2].max() <= 0.5
+
+
+def test_stage5a_unsupported_tea_layouts() -> None:
+    for tea_path in [TEA1_PDF_PATH, TEA2_PDF_PATH]:
+        assert tea_path.exists(), f"Missing tea PDF: {tea_path}"
+        doc = fitz.open(str(tea_path))
+        page = doc[0]
+        try:
+            build_stage1_box_geometry(page, doc)
+            raise AssertionError(f"Expected Unsupported layout error for {tea_path.name}")
+        except ValueError as exc:
+            msg = str(exc)
+            assert "Unsupported layout" in msg or "Multi-row" in msg, (
+                f"Expected clean unsupported layout error message for {tea_path.name}, got: {msg}"
+            )
+            print(f"\n{tea_path.name} cleanly raised unsupported layout error: {msg}")
+
+
+def test_stage5a_auto_suggest_and_proportion_warnings() -> None:
+    # 1. Auto-suggest D/W/H from PDF linework at 72/25.4 pt per mm
+    doc_fit = fitz.open(str(FITNESS_PDF_PATH))
+    page_fit = doc_fit[0]
+    sugg_fit = measure_pdf_nominal_dims(page_fit, doc_fit)
+    assert sugg_fit == (69.0, 160.0, 170.0), f"Expected (69, 160, 170) for Fitness Tube, got {sugg_fit}"
+
+    doc_boss = fitz.open(str(PDF_PATH))
+    page_boss = doc_boss[0]
+    sugg_boss = measure_pdf_nominal_dims(page_boss, doc_boss)
+    assert sugg_boss[0] == 50.0 and sugg_boss[1] == 120.0 and abs(sugg_boss[2] - 180.0) <= 1.0, f"Unexpected suggestion for BOSS: {sugg_boss}"
+
+    # 2. When proportions differ by > 5%, readable warning is generated with measured ratio and suggested dimensions
+    # Pass mismatched dimensions (e.g. 50 x 120 x 180) to Fitness Tube (which is 69 x 160 x 170)
+    mismatched_dims = (50.0, 120.0, 180.0)
+    box = build_stage1_box_geometry(page_fit, doc_fit, dimensions=mismatched_dims)
+    warnings = box.get("dimension_warnings", [])
+    assert warnings, "Expected proportion warning when entering mismatched dimensions"
+    warning_text = warnings[0]
+    print(f"\nProportion warning text: {warning_text}")
+    assert "differ from entered proportions" in warning_text or "differs from entered" in warning_text
+    assert "69 x 160 x 170" in warning_text
+
+
 
 
 

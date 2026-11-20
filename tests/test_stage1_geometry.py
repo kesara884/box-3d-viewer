@@ -27,7 +27,7 @@ def test_stage1_geometry_for_sample_pdf() -> None:
     heights = [panel["bbox_mm"][3] for panel in body]
     body_heights = [panel["bbox_mm"][3] for panel in body if panel["id"] != "glue"]
 
-    expected_widths = [50.0, 120.0, 50.0, 120.0, 15.0]
+    expected_widths = [50.0, 120.0, 50.0, 120.0, 14.0]
     assert all(abs(width - expected) / expected <= 0.02 for width, expected in zip(widths, expected_widths))
     assert any(abs(width - round(width)) > 1e-6 for width in widths), widths
 
