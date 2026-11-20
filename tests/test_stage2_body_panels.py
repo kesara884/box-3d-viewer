@@ -5,6 +5,7 @@ from pathlib import Path
 
 import fitz
 import numpy as np
+from streamlit.testing.v1 import AppTest
 
 from app import (
     build_stage1_box_geometry,
@@ -521,6 +522,40 @@ def test_stage5a_auto_suggest_and_proportion_warnings() -> None:
     print(f"\nProportion warning text: {warning_text}")
     assert "differ from entered proportions" in warning_text or "differs from entered" in warning_text
     assert "69 x 160 x 170" in warning_text
+
+
+def test_stage5a_streamlit_apptest_pipeline() -> None:
+    app_path = Path(__file__).resolve().parents[1] / "app.py"
+    assert app_path.exists(), f"Missing app.py: {app_path}"
+
+    # 1. BOSS PDF: renders without error or exception and shows viewer iframe
+    at_boss = AppTest.from_file(str(app_path), default_timeout=30).run()
+    at_boss.file_uploader[0].set_value((PDF_PATH.name, PDF_PATH.read_bytes(), "application/pdf")).run()
+    assert len(at_boss.exception) == 0, f"Unexpected exception in BOSS run: {[e.value for e in at_boss.exception]}"
+    assert len(at_boss.error) == 0, f"Unexpected error in BOSS run: {[e.value for e in at_boss.error]}"
+    iframes_boss = at_boss.get("iframe")
+    assert len(iframes_boss) >= 1, "Expected viewer HTML iframe to be rendered for BOSS"
+    assert "box-viewer" in iframes_boss[0].proto.srcdoc or "Three.js" in iframes_boss[0].proto.srcdoc
+
+    # 2. FITNESS TUBE PDF: renders without error or exception and shows viewer iframe
+    at_fit = AppTest.from_file(str(app_path), default_timeout=30).run()
+    at_fit.file_uploader[0].set_value((FITNESS_PDF_PATH.name, FITNESS_PDF_PATH.read_bytes(), "application/pdf")).run()
+    assert len(at_fit.exception) == 0, f"Unexpected exception in Fitness Tube run: {[e.value for e in at_fit.exception]}"
+    assert len(at_fit.error) == 0, f"Unexpected error in Fitness Tube run: {[e.value for e in at_fit.error]}"
+    iframes_fit = at_fit.get("iframe")
+    assert len(iframes_fit) >= 1, "Expected viewer HTML iframe to be rendered for Fitness Tube"
+    assert "box-viewer" in iframes_fit[0].proto.srcdoc or "Three.js" in iframes_fit[0].proto.srcdoc
+
+    # 3. BRITISH TEA PDF: shows 'Unsupported Carton Layout' message without raw exception
+    at_tea = AppTest.from_file(str(app_path), default_timeout=30).run()
+    at_tea.file_uploader[0].set_value((TEA1_PDF_PATH.name, TEA1_PDF_PATH.read_bytes(), "application/pdf")).run()
+    assert len(at_tea.exception) == 0, f"Unexpected exception in Tea run: {[e.value for e in at_tea.exception]}"
+    assert len(at_tea.error) >= 1, "Expected error message for unsupported British Tea multi-row layout"
+    tea_errors = [e.value for e in at_tea.error]
+    assert any("Unsupported Carton Layout" in err or "Multi-row" in err for err in tea_errors), (
+        f"Expected 'Unsupported Carton Layout' message, got: {tea_errors}"
+    )
+
 
 
 

@@ -19,8 +19,6 @@ from shapely.ops import polygonize, unary_union
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from box_layout import build_box_layout_from_pdf, validate_box_layout
-
 
 st.set_page_config(page_title="3D Packaging Box Preview", layout="wide")
 
@@ -2350,7 +2348,7 @@ def build_model(
     return build_stage2_body_panel_model(box, page=page)
 
 
-def make_viewer_html(model: Dict[str, Any]) -> str:
+def make_viewer_html(model: Dict[str, Any], flip: bool = False) -> str:
     model_json = json.dumps(model)
     template = string.Template(
         """
@@ -2434,7 +2432,7 @@ def make_viewer_html(model: Dict[str, Any]) -> str:
         <label>Fold Progress <input id="foldSlider" type="range" min="0" max="100" value="100" /></label>
         <button id="toggleFold">Pause</button>
         <label style="display:flex; align-items:center; gap:8px;">
-          <input id="flipToggle" type="checkbox" /> Flip
+          <input id="flipToggle" type="checkbox" $flip_checked /> Flip
         </label>
         <button id="downloadBtn">Download GLB</button>
       </div>
@@ -2790,7 +2788,7 @@ def make_viewer_html(model: Dict[str, Any]) -> str:
             const downloadBtn = el('downloadBtn');
             let foldProgress = 1.0;
             let paused = false;
-            let globalFlip = false;
+            let globalFlip = $global_flip;
 
             function remap(p, start, end) {
               if (p <= start) return 0.0;
@@ -2962,11 +2960,14 @@ def make_viewer_html(model: Dict[str, Any]) -> str:
       </script>
     """
     )
-    return template.substitute(model_json=model_json)
+    return template.substitute(
+        model_json=model_json,
+        flip_checked="checked" if flip else "",
+        global_flip="true" if flip else "false",
+    )
 
 
 def main() -> None:
-    st.caption("Stage 5A build - Generalized 3D Packaging Box Visualizer")
     st.title("3D Packaging Box Visualizer")
     st.write("Upload a packaging die-line PDF to preview its artwork as an interactive, auto-folded 3D box.")
 
@@ -3008,11 +3009,6 @@ def main() -> None:
 
         with st.sidebar:
             st.header("Box Dimensions (mm)")
-            if parsed_dims:
-                st.caption(f"Parsed from filename: {parsed_dims[0]:.0f} x {parsed_dims[1]:.0f} x {parsed_dims[2]:.0f} mm")
-            else:
-                st.caption("No dimensions in filename. Adjust below or use dieline suggestion.")
-
             if measured_dims:
                 sugg_d, sugg_w, sugg_h = [int(round(v)) for v in measured_dims]
                 if st.button(f"Use measured: {sugg_d} x {sugg_w} x {sugg_h}", key="btn_sidebar_measured"):
@@ -3032,29 +3028,96 @@ def main() -> None:
             st.session_state["dim_w"] = dim_w
             st.session_state["dim_h"] = dim_h
 
-            st.header("Advanced Controls")
-            st.caption("Die-line extraction thresholds.")
-            red_threshold = st.slider("Cut line red threshold", min_value=0.2, max_value=1.0, value=0.7, step=0.05)
-            green_threshold = st.slider("Crease line green threshold", min_value=0.2, max_value=1.0, value=0.5, step=0.05)
-            min_edge_len = st.slider("Minimum structural edge", min_value=5.0, max_value=50.0, value=15.0, step=1.0)
-            flip_direction = st.toggle("Flip fold direction", value=False)
+            if parsed_dims:
+                st.caption(f"Parsed from filename: {parsed_dims[0]:.0f} x {parsed_dims[1]:.0f} x {parsed_dims[2]:.0f} mm")
+            else:
+                st.caption("No dimensions in filename. Measured suggestion auto-filled above.")
+
+            with st.expander("Advanced", expanded=False):
+                st.caption("Die-line extraction thresholds.")
+                red_threshold = st.slider("Cut line red threshold", min_value=0.2, max_value=1.0, value=0.7, step=0.05)
+                green_threshold = st.slider("Crease line green threshold", min_value=0.2, max_value=1.0, value=0.5, step=0.05)
+                min_edge_len = st.slider("Minimum structural edge", min_value=5.0, max_value=50.0, value=15.0, step=1.0)
+                flip_direction = st.toggle("Flip fold direction", value=False)
 
         layer_info = detect_pdf_layers_summary(page, doc)
         if not layer_info["fold_detected"] and not layer_info["die_detected"]:
-            st.error("No Fold or Die layers were detected in the uploaded PDF.")
+            st.error(
+                "### ⚠️ Missing Vector Layers\n\n"
+                "No Fold (crease) or Die (cut) layers were detected in the uploaded PDF.\n\n"
+                "**What you can try:**\n"
+                "- Verify that your vector PDF contains paths on layers named **Fold** and **Die** (or crease/cut lines).\n"
+                "- Check the stroke colors and transparency of the die lines."
+            )
             return
 
-        with st.sidebar:
-            debug_expander = st.expander("Debug Vector & Layer Info", expanded=True)
-            debug_expander.markdown(
+        dims_tuple = (float(dim_d), float(dim_w), float(dim_h))
+        box = build_stage1_box_geometry(page, doc, dimensions=dims_tuple)
+        validate_stage1_box_geometry(box)
+
+        if parsed_dims is None:
+            if measured_dims:
+                sugg_d, sugg_w, sugg_h = [int(round(v)) for v in measured_dims]
+                st.info(
+                    f"Please confirm box dimensions: auto-filled from measured dieline as "
+                    f"**{sugg_d} x {sugg_w} x {sugg_h} mm** (Depth x Width x Height). "
+                    "You can adjust these in the sidebar if needed."
+                )
+            else:
+                st.info("Enter this box's Depth/Width/Height in the sidebar (mm).")
+
+        for warn in box.get("dimension_warnings", []):
+            st.warning(warn)
+
+        # 3D Viewer directly below uploader & notifications
+        model = build_stage2_body_panel_model(box, page=page)
+        st.components.v1.html(make_viewer_html(model, flip=flip_direction), height=720, scrolling=False)
+
+        # Consolidated Debug Info in ONE collapsed expander
+        with st.expander("Debug info", expanded=False):
+            st.markdown(
                 f"**Fold Layer**: {layer_info['fold_layer']} ({layer_info['fold_source']}, {layer_info['fold_count']} lines)<br>"
                 f"**Die Layer**: {layer_info['die_layer']} ({layer_info['die_source']}, {layer_info['die_count']} lines)",
                 unsafe_allow_html=True,
             )
-            raw_dump = _extract_raw_geometry_dump(page, doc)
+
+            st.subheader("Stage 1 geometry")
+            die_lines = len(box.get("red_cut_segments", []))
+            fold_lines = len(box.get("green_crease_segments", []))
+            panel_rows = _stage1_debug_table(box)
+            summary = {
+                "Die lines": die_lines,
+                "Fold lines": fold_lines,
+                "Panels": len(box.get("body_panels", [])),
+                "Flaps": len(box.get("flaps", [])),
+                "D mm": round(float(box.get("D_mm", 0.0)), 2),
+                "W mm": round(float(box.get("W_mm", 0.0)), 2),
+                "H mm": round(float(box.get("H_mm", 0.0)), 2),
+            }
+            st.dataframe([summary], hide_index=True, use_container_width=True)
+
+            fig = _render_stage1_debug_plot(page, box)
+            st.pyplot(fig)
+
+            st.dataframe(
+                panel_rows,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "id": "ID",
+                    "parent": "Parent",
+                    "hinge_p0": "Hinge p0",
+                    "hinge_p1": "Hinge p1",
+                    "bbox_w_mm": "Width mm",
+                    "bbox_h_mm": "Height mm",
+                    "area_mm2": "Area mm²",
+                },
+            )
+
+            raw_dump = box.get("raw_dump", [])
             debug_rows = stroke_color_debug(page, doc)
             if raw_dump:
-                debug_expander.dataframe(
+                st.dataframe(
                     [{
                         "Layer": row["layer"],
                         "Subpaths": row["subpaths"],
@@ -3068,7 +3131,7 @@ def main() -> None:
                     use_container_width=True,
                 )
             if debug_rows:
-                debug_expander.dataframe(
+                st.dataframe(
                     {
                         "Source": [row["source"] for row in debug_rows],
                         "RGB": [str(row["rgb"]) for row in debug_rows],
@@ -3082,64 +3145,56 @@ def main() -> None:
                     hide_index=True,
                     use_container_width=True,
                 )
+    except ValueError as exc:
+        msg = str(exc)
+        # Gather diagnostic details for user-friendly error message
+        try:
+            struct_lines = extract_structural_lines(page, doc=doc, min_length=0)
+            g_lines = [l for l in struct_lines if l.get("kind") == "crease"]
+            r_lines = [l for l in struct_lines if l.get("kind") == "cut"]
+            det_rows, reason = detect_layout_rows(g_lines, r_lines)
+        except Exception:
+            det_rows, g_lines, r_lines, reason = 1, [], [], ""
 
-        dims_tuple = (float(dim_d), float(dim_w), float(dim_h))
-        box = build_stage1_box_geometry(page, doc, dimensions=dims_tuple)
-        validate_stage1_box_geometry(box)
-
-        for warn in box.get("dimension_warnings", []):
-            st.warning(warn)
-
-        st.subheader("Stage 1 geometry")
-        die_lines = len(box.get("red_cut_segments", []))
-        fold_lines = len(box.get("green_crease_segments", []))
-        panel_rows = _stage1_debug_table(box)
-        summary = {
-            "Die lines": die_lines,
-            "Fold lines": fold_lines,
-            "Panels": len(box.get("body_panels", [])),
-            "Flaps": len(box.get("flaps", [])),
-            "D mm": round(float(box.get("D_mm", 0.0)), 2),
-            "W mm": round(float(box.get("W_mm", 0.0)), 2),
-            "H mm": round(float(box.get("H_mm", 0.0)), 2),
-        }
-        st.dataframe([summary], hide_index=True, use_container_width=True)
-
-        fig = _render_stage1_debug_plot(page, box)
-        st.pyplot(fig)
-
-        st.dataframe(
-            panel_rows,
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                "id": "ID",
-                "parent": "Parent",
-                "hinge_p0": "Hinge p0",
-                "hinge_p1": "Hinge p1",
-                "bbox_w_mm": "Width mm",
-                "bbox_h_mm": "Height mm",
-                "area_mm2": "Area mm²",
-            },
-        )
-
-        if parsed_dims is None:
-            col_info, col_btn = st.columns([3, 2])
-            with col_info:
-                st.info("Enter this box's Depth/Width/Height in the sidebar (mm)")
-            with col_btn:
-                if measured_dims:
-                    sugg_d, sugg_w, sugg_h = [int(round(v)) for v in measured_dims]
-                    if st.button(f"Use measured: {sugg_d} x {sugg_w} x {sugg_h}", key="btn_viewer_use_measured"):
-                        st.session_state["dim_d"] = float(sugg_d)
-                        st.session_state["dim_w"] = float(sugg_w)
-                        st.session_state["dim_h"] = float(sugg_h)
-                        st.rerun()
-
-        model = build_stage2_body_panel_model(box, page=page)
-        st.components.v1.html(make_viewer_html(model), height=720, scrolling=False)
+        if "Unsupported layout" in msg or "Multi-row" in msg or det_rows > 1:
+            st.error(
+                f"### ⚠️ Unsupported Carton Layout\n\n"
+                f"**What was detected:** Multi-row panel layout ({det_rows} rows detected, "
+                f"{len(g_lines)} crease lines, {len(r_lines)} cut lines).\n\n"
+                f"**Details:** {msg}\n\n"
+                "**Supported box types:** Currently, this visualizer supports single-row straight tuck end carton layouts.\n\n"
+                "**What you can try:**\n"
+                "- Upload a packaging dieline arranged in a single horizontal row of body panels.\n"
+                "- Check that Fold (crease) and Die (cut) layers are cleanly separated."
+            )
+        elif "validation failed" in msg.lower():
+            st.error(
+                f"### ⚠️ Dieline Validation Failure\n\n"
+                f"**What was detected:** Layout validation failed to form a valid 3D carton.\n\n"
+                f"**Details:** {msg}\n\n"
+                "**What you can try:**\n"
+                "- **Check Depth / Width / Height (mm)** in the sidebar to ensure proportions match the carton.\n"
+                "- **Check Fold and Die layers**: ensure green crease lines define internal body panels and red cut lines outline flaps.\n"
+                "- Check that all panel boundaries form continuous closed shapes."
+            )
+        else:
+            st.error(
+                f"### ⚠️ Dieline Processing Issue\n\n"
+                f"**Details:** {msg}\n\n"
+                "**What you can try:**\n"
+                "- Check Depth / Width / Height in the sidebar.\n"
+                "- Check Fold and Die vector layers in the PDF."
+            )
+        return
     except Exception as exc:
-        st.error(f"{exc}")
+        st.error(
+            f"### ⚠️ Unable to Generate 3D Box\n\n"
+            f"An unexpected error occurred while parsing the dieline: {exc}\n\n"
+            "**What you can try:**\n"
+            "- Verify that the uploaded file is a valid vector packaging PDF.\n"
+            "- Check Depth / Width / Height dimensions in the sidebar.\n"
+            "- Ensure the PDF includes vector stroke paths on Fold and Die layers."
+        )
         return
 
 
