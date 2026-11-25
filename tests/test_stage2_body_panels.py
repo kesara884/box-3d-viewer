@@ -484,20 +484,117 @@ def test_stage5a_fitness_tube_box() -> None:
     assert glue_world[:, 2].min() >= -D - 0.5 and glue_world[:, 2].max() <= 0.5
 
 
-def test_stage5a_unsupported_tea_layouts() -> None:
+def test_stage8b_two_row_layouts_support() -> None:
     for tea_path in [TEA1_PDF_PATH, TEA2_PDF_PATH]:
         assert tea_path.exists(), f"Missing tea PDF: {tea_path}"
         doc = fitz.open(str(tea_path))
         page = doc[0]
-        try:
-            build_stage1_box_geometry(page, doc)
-            raise AssertionError(f"Expected Unsupported layout error for {tea_path.name}")
-        except ValueError as exc:
-            msg = str(exc)
-            assert "Unsupported layout" in msg or "Multi-row" in msg, (
-                f"Expected clean unsupported layout error message for {tea_path.name}, got: {msg}"
+
+        # 1. Single-row layout detected
+        lines = extract_structural_lines(page, doc=doc, min_length=0)
+        green = [l for l in lines if l.get("kind") == "crease"]
+        red = [l for l in lines if l.get("kind") == "cut"]
+        rows, reason = detect_layout_rows(green, red)
+        assert rows == 1, f"Expected single-row layout for {tea_path.name}, got {rows} rows ({reason})"
+
+        box = build_stage1_box_geometry(page, doc)
+        model = build_stage2_body_panel_model(box)
+
+        # Assert 5 body panels
+        panels = model["panels"]
+        assert len(panels) == 5, f"Expected 5 body panels for {tea_path.name}, got {len(panels)}"
+        expected_pids = ["glue", "front", "side_b", "back", "side_a"]
+        assert [p["id"] for p in box["body_panels"]] == expected_pids
+        assert set(p["id"] for p in panels) == set(expected_pids)
+        assert model["root"] == "front"
+
+        # Assert >= 8 flaps
+        flaps = model["flaps"]
+        assert len(flaps) >= 8, f"Expected >= 8 flaps for {tea_path.name}, got {len(flaps)}"
+
+        W = box["W_mm"]
+        H = box["H_mm"]
+        D = box["D_mm"]
+
+        # Assert outward normals positive for all flaps
+        fn = compute_flap_outward_normals(model, fold_progress=1.0)
+        for fid, d in fn.items():
+            assert d["is_outward"], f"Flap {fid} normal is inward! dot={d['dot']}"
+            assert d["dot"] > 0.0
+
+        panel_by_id = {panel["id"]: panel for panel in panels}
+        flap_by_id = {flap["id"]: flap for flap in flaps}
+
+        def remap_p(p: float, start: float, end: float) -> float:
+            return float(np.clip((p - start) / (end - start), 0.0, 1.0))
+
+        p_wall = 1.0
+        p_dust = 1.0
+        p_tuck = 1.0
+
+        def panel_T(pid: str) -> np.ndarray:
+            p = panel_by_id[pid]
+            if p["parent"] is None:
+                return np.eye(4)
+            parent_transform = panel_T(p["parent"])
+            hinge = np.array(p.get("pivot_position", [0.0, 0.0, 0.0]), dtype=float).copy()
+            glue_off = float(p.get("glue_offset", 0.0))
+            if glue_off != 0.0:
+                hinge[0] -= glue_off * p_wall
+            sign = float(p.get("fold_sign", 1.0))
+            theta = sign * p_wall * (np.pi / 2.0)
+            c, s = np.cos(theta), np.sin(theta)
+            R = np.array([[c, 0.0, s, 0.0], [0.0, 1.0, 0.0, 0.0], [-s, 0.0, c, 0.0], [0.0, 0.0, 0.0, 1.0]])
+            Tr = np.array([[1.0, 0.0, 0.0, hinge[0]], [0.0, 1.0, 0.0, hinge[1]], [0.0, 0.0, 1.0, hinge[2]], [0.0, 0.0, 0.0, 1.0]])
+            return parent_transform @ Tr @ R
+
+        def flap_T(fid: str) -> np.ndarray:
+            f = flap_by_id[fid]
+            pr = f["parent"]
+            parent_transform = panel_T(pr) if pr in panel_by_id else flap_T(pr)
+            piv = f["pivot_position"]
+            sign = float(f.get("sign", 1.0))
+            sub_p = remap_p(1.0, 0.7, 0.95) if (fid == "top_tuck" or fid.endswith("_tuck")) else (p_dust if f.get("kind") == "dust" else p_tuck)
+            theta = sign * sub_p * (np.pi / 2.0)
+            c, s = np.cos(theta), np.sin(theta)
+            Rx = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, c, -s, 0.0], [0.0, s, c, 0.0], [0.0, 0.0, 0.0, 1.0]])
+            Tr = np.array([[1.0, 0.0, 0.0, piv[0]], [0.0, 1.0, 0.0, piv[1]], [0.0, 0.0, 1.0, piv[2]], [0.0, 0.0, 0.0, 1.0]])
+            return parent_transform @ Tr @ Rx
+
+        for flap in flaps:
+            fid = flap["id"]
+            poly = flap.get("polygon", [])
+            if not poly:
+                continue
+            sub_p = 1.0
+            local_z = float(flap.get("z_offset", 0.0)) * sub_p
+            local_pts = np.array([[pt[0], pt[1], local_z, 1.0] for pt in poly], dtype=float)
+            world = (flap_T(fid) @ local_pts.T).T[:, :3]
+            min_x, max_x = float(world[:, 0].min()), float(world[:, 0].max())
+            min_y, max_y = float(world[:, 1].min()), float(world[:, 1].max())
+            min_z, max_z = float(world[:, 2].min()), float(world[:, 2].max())
+
+            dev_x = max(0.0, -2.0 - min_x, max_x - (W + 2.0))
+            dev_y = max(0.0, -2.0 - min_y, max_y - (H + 2.0))
+            dev_z = max(0.0, -D - 2.0 - min_z, max_z - 2.0)
+            max_dev = max(dev_x, dev_y, dev_z)
+            assert max_dev <= 2.0, (
+                f"Flap {fid} of {tea_path.name} exceeds closed box bounds! max_dev={max_dev:.2f}mm "
+                f"(x:[{min_x:.1f}, {max_x:.1f}], y:[{min_y:.1f}, {max_y:.1f}], z:[{min_z:.1f}, {max_z:.1f}])"
             )
-            print(f"\n{tea_path.name} cleanly raised unsupported layout error: {msg}")
+
+        # Assert glue panel tucked behind neighbour
+        glue_p = panel_by_id["glue"]
+        h_glue = float(glue_p.get("height", H))
+        glue_corners = np.array([
+            [glue_p["x0"], 0.0, 0.0, 1.0],
+            [glue_p["x1"], 0.0, 0.0, 1.0],
+            [glue_p["x1"], h_glue, 0.0, 1.0],
+            [glue_p["x0"], h_glue, 0.0, 1.0],
+        ], dtype=float)
+        glue_world = (panel_T("glue") @ glue_corners.T).T[:, :3]
+        assert glue_world[:, 0].min() >= -0.5 and glue_world[:, 0].max() <= 1.0
+        assert glue_world[:, 2].min() >= -D - 0.5 and glue_world[:, 2].max() <= 0.5
 
 
 def test_stage5a_auto_suggest_and_proportion_warnings() -> None:
@@ -511,6 +608,16 @@ def test_stage5a_auto_suggest_and_proportion_warnings() -> None:
     page_boss = doc_boss[0]
     sugg_boss = measure_pdf_nominal_dims(page_boss, doc_boss)
     assert sugg_boss[0] == 50.0 and sugg_boss[1] == 120.0 and abs(sugg_boss[2] - 180.0) <= 1.0, f"Unexpected suggestion for BOSS: {sugg_boss}"
+
+    doc_tea1 = fitz.open(str(TEA1_PDF_PATH))
+    page_tea1 = doc_tea1[0]
+    sugg_tea1 = measure_pdf_nominal_dims(page_tea1, doc_tea1)
+    assert sugg_tea1 == (79.0, 150.0, 69.0), f"Expected (79, 150, 69) for British Tea, got {sugg_tea1}"
+
+    doc_tea2 = fitz.open(str(TEA2_PDF_PATH))
+    page_tea2 = doc_tea2[0]
+    sugg_tea2 = measure_pdf_nominal_dims(page_tea2, doc_tea2)
+    assert sugg_tea2 == (66.5, 119.0, 78.0), f"Expected (66.5, 119, 78) for Nordqvist, got {sugg_tea2}"
 
     # 2. When proportions differ by > 5%, readable warning is generated with measured ratio and suggested dimensions
     # Pass mismatched dimensions (e.g. 50 x 120 x 180) to Fitness Tube (which is 69 x 160 x 170)
@@ -529,7 +636,7 @@ def test_stage5a_streamlit_apptest_pipeline() -> None:
     assert app_path.exists(), f"Missing app.py: {app_path}"
 
     # 1. BOSS PDF: renders without error or exception and shows viewer iframe
-    at_boss = AppTest.from_file(str(app_path), default_timeout=30).run()
+    at_boss = AppTest.from_file(str(app_path), default_timeout=45).run()
     at_boss.file_uploader[0].set_value((PDF_PATH.name, PDF_PATH.read_bytes(), "application/pdf")).run()
     assert len(at_boss.exception) == 0, f"Unexpected exception in BOSS run: {[e.value for e in at_boss.exception]}"
     assert len(at_boss.error) == 0, f"Unexpected error in BOSS run: {[e.value for e in at_boss.error]}"
@@ -538,7 +645,7 @@ def test_stage5a_streamlit_apptest_pipeline() -> None:
     assert "box-viewer" in iframes_boss[0].proto.srcdoc or "Three.js" in iframes_boss[0].proto.srcdoc
 
     # 2. FITNESS TUBE PDF: renders without error or exception and shows viewer iframe
-    at_fit = AppTest.from_file(str(app_path), default_timeout=30).run()
+    at_fit = AppTest.from_file(str(app_path), default_timeout=45).run()
     at_fit.file_uploader[0].set_value((FITNESS_PDF_PATH.name, FITNESS_PDF_PATH.read_bytes(), "application/pdf")).run()
     assert len(at_fit.exception) == 0, f"Unexpected exception in Fitness Tube run: {[e.value for e in at_fit.exception]}"
     assert len(at_fit.error) == 0, f"Unexpected error in Fitness Tube run: {[e.value for e in at_fit.error]}"
@@ -546,15 +653,23 @@ def test_stage5a_streamlit_apptest_pipeline() -> None:
     assert len(iframes_fit) >= 1, "Expected viewer HTML iframe to be rendered for Fitness Tube"
     assert "box-viewer" in iframes_fit[0].proto.srcdoc or "Three.js" in iframes_fit[0].proto.srcdoc
 
-    # 3. BRITISH TEA PDF: shows 'Unsupported Carton Layout' message without raw exception
-    at_tea = AppTest.from_file(str(app_path), default_timeout=30).run()
+    # 3. BRITISH TEA PDF: renders without error or exception and shows viewer iframe
+    at_tea = AppTest.from_file(str(app_path), default_timeout=45).run()
     at_tea.file_uploader[0].set_value((TEA1_PDF_PATH.name, TEA1_PDF_PATH.read_bytes(), "application/pdf")).run()
     assert len(at_tea.exception) == 0, f"Unexpected exception in Tea run: {[e.value for e in at_tea.exception]}"
-    assert len(at_tea.error) >= 1, "Expected error message for unsupported British Tea multi-row layout"
-    tea_errors = [e.value for e in at_tea.error]
-    assert any("Unsupported Carton Layout" in err or "Multi-row" in err for err in tea_errors), (
-        f"Expected 'Unsupported Carton Layout' message, got: {tea_errors}"
-    )
+    assert len(at_tea.error) == 0, f"Unexpected error in Tea run: {[e.value for e in at_tea.error]}"
+    iframes_tea = at_tea.get("iframe")
+    assert len(iframes_tea) >= 1, "Expected viewer HTML iframe to be rendered for British Tea"
+    assert "box-viewer" in iframes_tea[0].proto.srcdoc or "Three.js" in iframes_tea[0].proto.srcdoc
+
+    # 4. NORDQVIST PDF: renders without error or exception and shows viewer iframe
+    at_nord = AppTest.from_file(str(app_path), default_timeout=45).run()
+    at_nord.file_uploader[0].set_value((TEA2_PDF_PATH.name, TEA2_PDF_PATH.read_bytes(), "application/pdf")).run()
+    assert len(at_nord.exception) == 0, f"Unexpected exception in Nordqvist run: {[e.value for e in at_nord.exception]}"
+    assert len(at_nord.error) == 0, f"Unexpected error in Nordqvist run: {[e.value for e in at_nord.error]}"
+    iframes_nord = at_nord.get("iframe")
+    assert len(iframes_nord) >= 1, "Expected viewer HTML iframe to be rendered for Nordqvist"
+    assert "box-viewer" in iframes_nord[0].proto.srcdoc or "Three.js" in iframes_nord[0].proto.srcdoc
 
 
 

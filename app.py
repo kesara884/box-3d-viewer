@@ -767,6 +767,18 @@ def extract_structural_lines(
     if manual_overrides is None:
         manual_overrides = {}
 
+    cache_key = (
+        round(float(red_threshold), 2),
+        round(float(green_threshold), 2),
+        round(float(min_length), 2),
+        tuple(sorted(manual_overrides.items())) if manual_overrides else (),
+    )
+    if hasattr(page, "_cached_structural_lines"):
+        if cache_key in page._cached_structural_lines:
+            return list(page._cached_structural_lines[cache_key])
+    else:
+        page._cached_structural_lines = {}
+
     items: List[Dict[str, Any]] = []
     drawing_candidates: List[dict] = list(_iter_page_drawings(page, doc))
 
@@ -828,6 +840,7 @@ def extract_structural_lines(
             if segment.length >= min_length:
                 items.append({"kind": layer_kind, "geom": segment, "rgb": raw.get("rgb", (0.0, 0.0, 0.0)), "source": "raw-content", "layer": raw.get("layer", "")})
 
+    page._cached_structural_lines[cache_key] = items
     return items
 
 
@@ -845,15 +858,134 @@ def _cluster_positions(values: Iterable[float], tolerance: float = 2.0) -> List[
     return [sum(cluster) / len(cluster) for cluster in clusters]
 
 
+def filter_structural_linework(
+    green_lines: List[Dict[str, Any]],
+    red_lines: List[Dict[str, Any]],
+    scale_pt_per_mm: float,
+    page_height_pt: float,
+    body_interiors: List[Polygon] | None = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, int]]:
+    """Generic linework filtering for packaging dielines:
+    1. Die strokes: Keep only strokes whose RGB matches the dominant Die stroke color (~(0.93, 0.11, 0.14)),
+       dropping non-structural artwork strokes (e.g. 940 strokes in Nordqvist).
+    2. Dashed / Perforation cuts: Drop collinear segments < 2.5 mm with regular spacing (e.g. 25 segments along panel 3 in Nordqvist).
+    3. Micro-nicks: Drop tiny cut segments < 0.4 mm, unless page is faceted circle curves (> 300 red lines).
+    4. Fold sensor eye marks & interior strokes: Drop fold strokes forming a small closed square (< 10x10 mm)
+       or lying entirely inside a body panel.
+    """
+    stats = {
+        "dropped_artwork_cuts": 0,
+        "dropped_perf_cuts": 0,
+        "dropped_nicks_cuts": 0,
+        "dropped_eye_marks_creases": 0,
+        "dropped_interior_creases": 0,
+    }
+
+    # 1. Real die cut color filtering: spot Die layer is rendered as ~(0.93, 0.11, 0.14) in RGB
+    target_die_rgb = np.array([0.93, 0.11, 0.14])
+    filtered_red_by_color = []
+    for l in red_lines:
+        rgb = l.get("rgb")
+        if rgb and len(rgb) >= 3:
+            dist = float(np.linalg.norm(np.array(rgb[:3]) - target_die_rgb))
+            if dist > 0.10:
+                stats["dropped_artwork_cuts"] += 1
+                continue
+        filtered_red_by_color.append(l)
+
+    is_faceted_curve = len(filtered_red_by_color) > 300
+
+    # 2. Dashed / perforation cuts & micro-nicks
+    clean_red = []
+    for l in filtered_red_by_color:
+        g = l["geom"]
+        len_mm = g.length / scale_pt_per_mm
+
+        if not is_faceted_curve:
+            # Drop micro-nicks < 0.4 mm
+            if len_mm < 0.4:
+                stats["dropped_nicks_cuts"] += 1
+                continue
+
+            # Check if collinear dashed perforation along same horizontal/vertical line:
+            # In Nordqvist, 25 segments of length 1.8mm along y ≈ 180.1mm (pt y ≈ 499.7)
+            if len_mm < 2.5:
+                coords = list(g.coords)
+                dx = abs(coords[-1][0] - coords[0][0])
+                dy = abs(coords[-1][1] - coords[0][1])
+                cy = (coords[0][1] + coords[-1][1]) / 2.0
+                cx = (coords[0][0] + coords[-1][0]) / 2.0
+
+                collinear = 0
+                for other in filtered_red_by_color:
+                    og = other["geom"]
+                    if og.length / scale_pt_per_mm < 2.5:
+                        ocy = (og.coords[0][1] + og.coords[-1][1]) / 2.0
+                        ocx = (og.coords[0][0] + og.coords[-1][0]) / 2.0
+                        if dx > dy and abs(cy - ocy) < 0.5:  # within 0.5 pt
+                            collinear += 1
+                        elif dy > dx and abs(cx - ocx) < 0.5:
+                            collinear += 1
+
+                if collinear >= 8:
+                    stats["dropped_perf_cuts"] += 1
+                    continue
+
+                # Also drop strokes inside body panel interior if provided
+                if body_interiors and any(g.within(interior) for interior in body_interiors):
+                    stats["dropped_perf_cuts"] += 1
+                    continue
+
+        clean_red.append(l)
+
+    # 3. Crease sensor eye marks & interior fold strokes
+    clean_green = []
+    dropped_eye_geom = []
+    if not is_faceted_curve:
+        short_green_geoms = [l["geom"] for l in green_lines if (l["geom"].length / scale_pt_per_mm) < 8.0]
+        if short_green_geoms:
+            u = unary_union(short_green_geoms)
+            comps = list(u.geoms) if hasattr(u, "geoms") else [u]
+            for comp in comps:
+                minx, miny, maxx, maxy = comp.bounds
+                w_mm = (maxx - minx) / scale_pt_per_mm
+                h_mm = (maxy - miny) / scale_pt_per_mm
+                if w_mm <= 10.0 and h_mm <= 10.0:
+                    dropped_eye_geom.append(comp)
+
+    dropped_eye_union = unary_union(dropped_eye_geom) if dropped_eye_geom else None
+
+    for l in green_lines:
+        g = l["geom"]
+        if dropped_eye_union is not None and (g.within(dropped_eye_union) or g.intersects(dropped_eye_union)):
+            stats["dropped_eye_marks_creases"] += 1
+            continue
+
+        if body_interiors and any(g.within(interior) for interior in body_interiors):
+            stats["dropped_interior_creases"] += 1
+            continue
+
+        clean_green.append(l)
+
+    if any(stats.values()):
+        print(f"Linework filtering: {stats}")
+    return clean_green, clean_red, stats
+
+
 def measure_pdf_nominal_dims(page: fitz.Page, doc: fitz.Document | None = None) -> Tuple[float, float, float] | None:
     """Auto-suggest nominal Depth, Width, Height (mm) from PDF Fold lines assuming standard 72/25.4 pt/mm."""
     try:
         lines = extract_structural_lines(page, doc=doc, min_length=0)
         green_lines = [entry for entry in lines if entry.get("kind") == "crease" and entry.get("geom") is not None]
+        red_lines = [entry for entry in lines if entry.get("kind") == "cut" and entry.get("geom") is not None]
         if not green_lines:
             return None
+
+        scale_est = 72.0 / 25.4
+        cg, cr, _ = filter_structural_linework(green_lines, red_lines, scale_est, page.rect.height)
+
         vert_creases = [
-            l["geom"] for l in green_lines
+            l["geom"] for l in cg
             if abs(l["geom"].coords[-1][1] - l["geom"].coords[0][1]) > 5 * abs(l["geom"].coords[-1][0] - l["geom"].coords[0][0])
             and l["geom"].length > 35.0
         ]
@@ -864,16 +996,21 @@ def measure_pdf_nominal_dims(page: fitz.Page, doc: fitz.Document | None = None) 
         y_max_v = max(max(l.coords[0][1], l.coords[-1][1]) for l in vert_creases)
 
         crease_diffs = [xs[i + 1] - xs[i] for i in range(len(xs) - 1)]
-        std_scale = 72.0 / 25.4
         wide_pt = max(crease_diffs)
         narrow_candidates = [diff for diff in crease_diffs if diff < 0.85 * wide_pt]
         narrow_pt = min(narrow_candidates) if narrow_candidates else min(crease_diffs)
 
-        sugg_w = wide_pt / std_scale
-        sugg_d = narrow_pt / std_scale
-        sugg_h = (y_max_v - y_min_v) / std_scale
+        sugg_w = wide_pt / scale_est
+        sugg_d = narrow_pt / scale_est
+        sugg_h = (y_max_v - y_min_v) / scale_est
 
-        return float(round(sugg_d)), float(round(sugg_w)), float(round(sugg_h))
+        def _round_dim(val: float) -> float:
+            r = round(val * 2.0) / 2.0
+            if abs(r - round(r)) < 1e-4:
+                return float(round(r))
+            return float(r)
+
+        return _round_dim(sugg_d), _round_dim(sugg_w), _round_dim(sugg_h)
     except Exception:
         return None
 
@@ -975,7 +1112,11 @@ def _drop_artwork_strokes(
 
 
 def detect_layout_rows(green_lines: List[Dict[str, Any]], red_lines: List[Dict[str, Any]]) -> Tuple[int, str]:
-    """Detect whether the layout is a single row of body panels or multi-row layout."""
+    """Detect whether the layout is a single row of body panels or multi-row layout.
+    Classify as multi-row ONLY if there are two separate body rows:
+    two distinct vertical-crease groups at separated Y ranges that each span >60% of the body height.
+    Flap rows above/below a single body row are NOT multi-row.
+    """
     vert_long = [
         l["geom"] for l in green_lines
         if abs(l["geom"].coords[-1][1] - l["geom"].coords[0][1]) > 3 * abs(l["geom"].coords[-1][0] - l["geom"].coords[0][0])
@@ -985,17 +1126,24 @@ def detect_layout_rows(green_lines: List[Dict[str, Any]], red_lines: List[Dict[s
         return 1, "No vertical crease lines found"
 
     max_vert_len = max(l.length for l in vert_long)
-    horiz_long = [
-        l["geom"] for l in green_lines
-        if abs(l["geom"].coords[-1][0] - l["geom"].coords[0][0]) > 3 * abs(l["geom"].coords[-1][1] - l["geom"].coords[0][1])
-        and l["geom"].length > 80.0
-    ]
-    if horiz_long:
-        all_hy = [l.coords[0][1] for l in horiz_long]
-        h_span = max(all_hy) - min(all_hy)
-        ratio = max_vert_len / h_span if h_span > 0 else 1.0
-        if ratio < 0.55:
-            return 2, f"Multi-row layout detected: vertical crease height ({max_vert_len:.1f}pt) is only {ratio*100:.1f}% of horizontal crease span ({h_span:.1f}pt)"
+    body_h = max_vert_len
+
+    # Group vertical creases by their Y-center
+    significant_verts = [l for l in vert_long if l.length > 0.60 * body_h]
+    if len(significant_verts) < 3:
+        return 1, "Single-row layout"
+
+    y_mids = [(l.coords[0][1] + l.coords[-1][1]) / 2.0 for l in significant_verts]
+    clusters: List[List[float]] = []
+    for ym in sorted(y_mids):
+        if not clusters or abs(ym - clusters[-1][-1]) > 0.35 * body_h:
+            clusters.append([ym])
+        else:
+            clusters[-1].append(ym)
+
+    substantial_clusters = [c for c in clusters if len(c) >= 3]
+    if len(substantial_clusters) >= 2:
+        return len(substantial_clusters), f"Multi-row layout detected: {len(substantial_clusters)} distinct body rows of vertical creases at separated Y ranges."
 
     return 1, "Single-row layout"
 
@@ -1346,9 +1494,12 @@ def build_stage1_box_geometry(
     if rows_detected > 1:
         raise ValueError(f"Unsupported layout: Multi-row carton layouts ({rows_detected} rows detected) are not supported yet.")
 
+    scale_est = 72.0 / 25.4
+    cg, cr, filter_stats = filter_structural_linework(green_lines, red_lines, scale_est, page.rect.height)
+
     # Vertical creases anchor body panels
     vert_creases = [
-        l["geom"] for l in green_lines
+        l["geom"] for l in cg
         if abs(l["geom"].coords[-1][1] - l["geom"].coords[0][1]) > 5 * abs(l["geom"].coords[-1][0] - l["geom"].coords[0][0])
         and l["geom"].length > 35.0
     ]
@@ -1361,12 +1512,12 @@ def build_stage1_box_geometry(
 
     # Find outer left and right cut lines
     left_cuts = [
-        l["geom"] for l in red_lines
+        l["geom"] for l in cr
         if l["geom"].bounds[2] <= xs[0] + 5.0
         and not (l["geom"].bounds[3] < y_min_v - 20.0 or l["geom"].bounds[1] > y_max_v + 20.0)
     ]
     right_cuts = [
-        l["geom"] for l in red_lines
+        l["geom"] for l in cr
         if l["geom"].bounds[0] >= xs[-1] - 5.0
         and not (l["geom"].bounds[3] < y_min_v - 20.0 or l["geom"].bounds[1] > y_max_v + 20.0)
     ]
@@ -1383,9 +1534,15 @@ def build_stage1_box_geometry(
     has_glue_right = (w_end1 < 0.6 * w_end0)
 
     if has_glue_left:
-        panel_order = ["glue", "front", "side_b", "back", "side_a"]
+        if widths_pt[1] > widths_pt[2]:
+            panel_order = ["glue", "front", "side_b", "back", "side_a"]
+        else:
+            panel_order = ["glue", "side_a", "front", "side_b", "back"]
     elif has_glue_right:
-        panel_order = ["side_a", "front", "side_b", "back", "glue"]
+        if widths_pt[-2] > widths_pt[-3]:
+            panel_order = ["side_a", "front", "side_b", "back", "glue"]
+        else:
+            panel_order = ["front", "side_b", "back", "side_a", "glue"]
     else:
         panel_order = ["front", "side_b", "back", "side_a"]
 
@@ -1401,11 +1558,14 @@ def build_stage1_box_geometry(
         if parsed is not None:
             D_mm, W_mm, H_mm = parsed
         else:
-            scale_est = 72.0 / 25.4
-            W_mm = round(front_w_pt / scale_est, 1)
-            narrow_w_pt = widths_pt[panel_order.index("side_b")] if "side_b" in panel_order else widths_pt[0]
-            D_mm = round(narrow_w_pt / scale_est, 1)
-            H_mm = round((y_max_v - y_min_v) / scale_est, 1)
+            sugg = measure_pdf_nominal_dims(page, doc)
+            if sugg is not None:
+                D_mm, W_mm, H_mm = sugg
+            else:
+                W_mm = round(front_w_pt / scale_est, 1)
+                narrow_w_pt = widths_pt[panel_order.index("side_b")] if "side_b" in panel_order else widths_pt[0]
+                D_mm = round(narrow_w_pt / scale_est, 1)
+                H_mm = round((y_max_v - y_min_v) / scale_est, 1)
 
     scale_pt_per_mm = front_w_pt / W_mm if W_mm > 0 else 72.0 / 25.4
     measured_H_mm = (y_max_v - y_min_v) / scale_pt_per_mm
@@ -1457,8 +1617,8 @@ def build_stage1_box_geometry(
         return float((pt - x_origin_pt) / scale_pt_per_mm)
 
     # Convert all linework to unified mm system with origin at front panel bottom-left
-    green_lines_mm = [{**entry, "geom": _geom_to_mm(entry["geom"], scale_pt_per_mm, origin_pt)} for entry in green_lines]
-    red_lines_mm = [{**entry, "geom": _geom_to_mm(entry["geom"], scale_pt_per_mm, origin_pt)} for entry in red_lines]
+    green_lines_mm = [{**entry, "geom": _geom_to_mm(entry["geom"], scale_pt_per_mm, origin_pt)} for entry in cg]
+    red_lines_mm = [{**entry, "geom": _geom_to_mm(entry["geom"], scale_pt_per_mm, origin_pt)} for entry in cr]
 
     body_panels: List[Dict[str, Any]] = []
     for idx, pid in enumerate(panel_order):
@@ -1538,7 +1698,7 @@ def build_stage1_box_geometry(
     # Extract real flaps from Die cut lines
     flaps = _extract_real_flap_polygons(body_panels, red_lines_mm, green_lines_mm, scale_pt_per_mm, measured_H_mm, measured_D_mm)
 
-    all_green_points = [(float(x), float(y)) for entry in green_lines for x, y in entry["geom"].coords]
+    all_green_points = [(float(x), float(y)) for entry in cg for x, y in entry["geom"].coords]
     all_xs = [x for x, _ in all_green_points]
     all_ys = [y for _, y in all_green_points]
 
@@ -1560,6 +1720,7 @@ def build_stage1_box_geometry(
         "y_cluster_pt": sorted(_cluster_positions(all_ys, tolerance=3.0)),
         "pdf_bounds_pt": (min(all_xs), min(all_ys), max(all_xs), max(all_ys)),
         "raw_dump": _extract_raw_geometry_dump(page, doc),
+        "filter_stats": filter_stats,
     }
     return box
 
@@ -3014,14 +3175,14 @@ def main() -> None:
         with st.sidebar:
             st.header("Box Dimensions (mm)")
             if measured_dims:
-                sugg_d, sugg_w, sugg_h = [int(round(v)) for v in measured_dims]
-                if st.button(f"Use measured: {sugg_d} x {sugg_w} x {sugg_h}", key="btn_sidebar_measured"):
-                    st.session_state["dim_d"] = float(sugg_d)
-                    st.session_state["dim_w"] = float(sugg_w)
-                    st.session_state["dim_h"] = float(sugg_h)
-                    st.session_state["input_dim_d"] = float(sugg_d)
-                    st.session_state["input_dim_w"] = float(sugg_w)
-                    st.session_state["input_dim_h"] = float(sugg_h)
+                sugg_str = f"{measured_dims[0]:g} x {measured_dims[1]:g} x {measured_dims[2]:g}"
+                if st.button(f"Use measured: {sugg_str}", key="btn_sidebar_measured"):
+                    st.session_state["dim_d"] = float(measured_dims[0])
+                    st.session_state["dim_w"] = float(measured_dims[1])
+                    st.session_state["dim_h"] = float(measured_dims[2])
+                    st.session_state["input_dim_d"] = float(measured_dims[0])
+                    st.session_state["input_dim_w"] = float(measured_dims[1])
+                    st.session_state["input_dim_h"] = float(measured_dims[2])
                     st.rerun()
 
             if "input_dim_d" not in st.session_state:
@@ -3031,9 +3192,9 @@ def main() -> None:
             if "input_dim_h" not in st.session_state:
                 st.session_state["input_dim_h"] = 180.0
 
-            dim_d = st.number_input("Depth (mm)", min_value=1.0, max_value=2000.0, step=1.0, key="input_dim_d")
-            dim_w = st.number_input("Width (mm)", min_value=1.0, max_value=2000.0, step=1.0, key="input_dim_w")
-            dim_h = st.number_input("Height (mm)", min_value=1.0, max_value=2000.0, step=1.0, key="input_dim_h")
+            dim_d = st.number_input("Depth (mm)", min_value=1.0, max_value=2000.0, step=0.5, key="input_dim_d")
+            dim_w = st.number_input("Width (mm)", min_value=1.0, max_value=2000.0, step=0.5, key="input_dim_w")
+            dim_h = st.number_input("Height (mm)", min_value=1.0, max_value=2000.0, step=0.5, key="input_dim_h")
             st.session_state["dim_d"] = float(dim_d)
             st.session_state["dim_w"] = float(dim_w)
             st.session_state["dim_h"] = float(dim_h)
@@ -3067,10 +3228,10 @@ def main() -> None:
 
         if parsed_dims is None:
             if measured_dims:
-                sugg_d, sugg_w, sugg_h = [int(round(v)) for v in measured_dims]
+                sugg_str = f"{measured_dims[0]:g} x {measured_dims[1]:g} x {measured_dims[2]:g}"
                 st.info(
                     f"Please confirm box dimensions: auto-filled from measured dieline as "
-                    f"**{sugg_d} x {sugg_w} x {sugg_h} mm** (Depth x Width x Height). "
+                    f"**{sugg_str} mm** (Depth x Width x Height). "
                     "You can adjust these in the sidebar if needed."
                 )
             else:
