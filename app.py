@@ -2974,6 +2974,9 @@ def main() -> None:
     uploaded_file = st.file_uploader("Upload your Box Die-Line PDF", type=["pdf"])
 
     if uploaded_file is None:
+        st.session_state.pop("active_file", None)
+        for k in ("input_dim_d", "input_dim_w", "input_dim_h", "dim_d", "dim_w", "dim_h"):
+            st.session_state.pop(k, None)
         with st.sidebar:
             st.header("Box Dimensions (mm)")
             st.caption("Upload a die-line PDF to detect or adjust box dimensions.")
@@ -2995,17 +2998,18 @@ def main() -> None:
         if st.session_state.get("active_file") != file_state_key:
             st.session_state["active_file"] = file_state_key
             if parsed_dims:
-                st.session_state["dim_d"] = float(parsed_dims[0])
-                st.session_state["dim_w"] = float(parsed_dims[1])
-                st.session_state["dim_h"] = float(parsed_dims[2])
+                d_init, w_init, h_init = float(parsed_dims[0]), float(parsed_dims[1]), float(parsed_dims[2])
             elif measured_dims:
-                st.session_state["dim_d"] = float(measured_dims[0])
-                st.session_state["dim_w"] = float(measured_dims[1])
-                st.session_state["dim_h"] = float(measured_dims[2])
+                d_init, w_init, h_init = float(measured_dims[0]), float(measured_dims[1]), float(measured_dims[2])
             else:
-                st.session_state["dim_d"] = 50.0
-                st.session_state["dim_w"] = 120.0
-                st.session_state["dim_h"] = 180.0
+                d_init, w_init, h_init = 50.0, 120.0, 180.0
+
+            st.session_state["dim_d"] = d_init
+            st.session_state["dim_w"] = w_init
+            st.session_state["dim_h"] = h_init
+            st.session_state["input_dim_d"] = d_init
+            st.session_state["input_dim_w"] = w_init
+            st.session_state["input_dim_h"] = h_init
 
         with st.sidebar:
             st.header("Box Dimensions (mm)")
@@ -3015,18 +3019,24 @@ def main() -> None:
                     st.session_state["dim_d"] = float(sugg_d)
                     st.session_state["dim_w"] = float(sugg_w)
                     st.session_state["dim_h"] = float(sugg_h)
+                    st.session_state["input_dim_d"] = float(sugg_d)
+                    st.session_state["input_dim_w"] = float(sugg_w)
+                    st.session_state["input_dim_h"] = float(sugg_h)
                     st.rerun()
 
-            val_d = float(st.session_state.get("dim_d", 50.0))
-            val_w = float(st.session_state.get("dim_w", 120.0))
-            val_h = float(st.session_state.get("dim_h", 180.0))
+            if "input_dim_d" not in st.session_state:
+                st.session_state["input_dim_d"] = 50.0
+            if "input_dim_w" not in st.session_state:
+                st.session_state["input_dim_w"] = 120.0
+            if "input_dim_h" not in st.session_state:
+                st.session_state["input_dim_h"] = 180.0
 
-            dim_d = st.number_input("Depth (mm)", min_value=1.0, max_value=2000.0, value=val_d, step=1.0, key="input_dim_d")
-            dim_w = st.number_input("Width (mm)", min_value=1.0, max_value=2000.0, value=val_w, step=1.0, key="input_dim_w")
-            dim_h = st.number_input("Height (mm)", min_value=1.0, max_value=2000.0, value=val_h, step=1.0, key="input_dim_h")
-            st.session_state["dim_d"] = dim_d
-            st.session_state["dim_w"] = dim_w
-            st.session_state["dim_h"] = dim_h
+            dim_d = st.number_input("Depth (mm)", min_value=1.0, max_value=2000.0, step=1.0, key="input_dim_d")
+            dim_w = st.number_input("Width (mm)", min_value=1.0, max_value=2000.0, step=1.0, key="input_dim_w")
+            dim_h = st.number_input("Height (mm)", min_value=1.0, max_value=2000.0, step=1.0, key="input_dim_h")
+            st.session_state["dim_d"] = float(dim_d)
+            st.session_state["dim_w"] = float(dim_w)
+            st.session_state["dim_h"] = float(dim_h)
 
             if parsed_dims:
                 st.caption(f"Parsed from filename: {parsed_dims[0]:.0f} x {parsed_dims[1]:.0f} x {parsed_dims[2]:.0f} mm")
