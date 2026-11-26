@@ -22,6 +22,32 @@ import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="3D Packaging Box Preview", layout="wide")
 
+st.markdown(
+    """
+    <style>
+    /* Hide top-right Fork button, GitHub icon, and hamburger menu */
+    [data-testid="stToolbar"],
+    [data-testid="stHeader"],
+    [data-testid="stAppDeployButton"],
+    .stAppDeployButton,
+    header {
+        display: none !important;
+        visibility: hidden !important;
+    }
+
+    /* Hide bottom-right creator profile avatar & Streamlit badge */
+    [data-testid="stStatusWidget"],
+    .viewerBadge_container__r5tak,
+    .styles_viewerBadge__CvC9N,
+    div[class*="viewerBadge"],
+    footer {
+        display: none !important;
+        visibility: hidden !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 def normalize_color(color_value: Any) -> Tuple[float, float, float]:
     """Accept fitz color values in 0-1 or 0-255 space."""
