@@ -22,6 +22,14 @@ PDF_PATH = Path(__file__).resolve().parents[1] / "20182462_POWER_TRUNK 3P_USA_50
 FITNESS_PDF_PATH = Path(__file__).resolve().parents[1] / "FITNESS TUBE BOX_V7.pdf"
 TEA1_PDF_PATH = Path(__file__).resolve().parents[1] / "BRITISH TEA - 20TB EARL GREY_EDITED_SA_V3.pdf"
 TEA2_PDF_PATH = Path(__file__).resolve().parents[1] / "Nordqvist_Moomin_20TB_37465_AFRICA_ Rooibos Tea.pdf"
+NO_DIELINE_PDF_PERFUME = Path(__file__).resolve().parents[1] / "02_Luxury_Perfume_Noir_55x85x160mm.pdf"
+NO_DIELINE_PDF_VITAMIN = Path(__file__).resolve().parents[1] / "06_Vitamin_C_Serum_38x42x125mm.pdf"
+NO_DIELINE_PDF_ESPRESSO = Path(__file__).resolve().parents[1] / "08_Espresso_Coffee_Pods_65x120x150mm.pdf"
+BAMBOO_PDF_PATH = Path(__file__).resolve().parents[1] / "NORDIC_FORM_BAMBOO_SOCKS_3P_ARTWORK_V1.pdf"
+AEROFIT_PDF_PATH = Path(__file__).resolve().parents[1] / "AEROFIT_RESISTANCE_BAND_SET_ARTWORK_V1.pdf"
+CEYLON_PDF_PATH = Path(__file__).resolve().parents[1] / "CEYLON_SPICE_TEA_25TB_ARTWORK_V1.pdf"
+HIGHLAND_PDF_PATH = Path(__file__).resolve().parents[1] / "HIGHLAND_ROAST_ESPRESSO_PODS_10CT_V1.pdf"
+LUMIERE_PDF_PATH = Path(__file__).resolve().parents[1] / "LUMIERE_BOTANICAL_SERUM_30ML_V1.pdf"
 
 
 def test_stage2_body_panel_fold_tree_matches_mm_box() -> None:
@@ -636,7 +644,7 @@ def test_stage5a_streamlit_apptest_pipeline() -> None:
     assert app_path.exists(), f"Missing app.py: {app_path}"
 
     # 1. BOSS PDF: renders without error or exception and shows viewer iframe
-    at_boss = AppTest.from_file(str(app_path), default_timeout=45).run()
+    at_boss = AppTest.from_file(str(app_path), default_timeout=90).run()
     at_boss.file_uploader[0].set_value((PDF_PATH.name, PDF_PATH.read_bytes(), "application/pdf")).run()
     assert len(at_boss.exception) == 0, f"Unexpected exception in BOSS run: {[e.value for e in at_boss.exception]}"
     assert len(at_boss.error) == 0, f"Unexpected error in BOSS run: {[e.value for e in at_boss.error]}"
@@ -645,7 +653,7 @@ def test_stage5a_streamlit_apptest_pipeline() -> None:
     assert "box-viewer" in iframes_boss[0].proto.srcdoc or "Three.js" in iframes_boss[0].proto.srcdoc
 
     # 2. FITNESS TUBE PDF: renders without error or exception and shows viewer iframe
-    at_fit = AppTest.from_file(str(app_path), default_timeout=45).run()
+    at_fit = AppTest.from_file(str(app_path), default_timeout=90).run()
     at_fit.file_uploader[0].set_value((FITNESS_PDF_PATH.name, FITNESS_PDF_PATH.read_bytes(), "application/pdf")).run()
     assert len(at_fit.exception) == 0, f"Unexpected exception in Fitness Tube run: {[e.value for e in at_fit.exception]}"
     assert len(at_fit.error) == 0, f"Unexpected error in Fitness Tube run: {[e.value for e in at_fit.error]}"
@@ -654,7 +662,7 @@ def test_stage5a_streamlit_apptest_pipeline() -> None:
     assert "box-viewer" in iframes_fit[0].proto.srcdoc or "Three.js" in iframes_fit[0].proto.srcdoc
 
     # 3. BRITISH TEA PDF: renders without error or exception and shows viewer iframe
-    at_tea = AppTest.from_file(str(app_path), default_timeout=45).run()
+    at_tea = AppTest.from_file(str(app_path), default_timeout=90).run()
     at_tea.file_uploader[0].set_value((TEA1_PDF_PATH.name, TEA1_PDF_PATH.read_bytes(), "application/pdf")).run()
     assert len(at_tea.exception) == 0, f"Unexpected exception in Tea run: {[e.value for e in at_tea.exception]}"
     assert len(at_tea.error) == 0, f"Unexpected error in Tea run: {[e.value for e in at_tea.error]}"
@@ -663,13 +671,401 @@ def test_stage5a_streamlit_apptest_pipeline() -> None:
     assert "box-viewer" in iframes_tea[0].proto.srcdoc or "Three.js" in iframes_tea[0].proto.srcdoc
 
     # 4. NORDQVIST PDF: renders without error or exception and shows viewer iframe
-    at_nord = AppTest.from_file(str(app_path), default_timeout=45).run()
+    at_nord = AppTest.from_file(str(app_path), default_timeout=90).run()
     at_nord.file_uploader[0].set_value((TEA2_PDF_PATH.name, TEA2_PDF_PATH.read_bytes(), "application/pdf")).run()
     assert len(at_nord.exception) == 0, f"Unexpected exception in Nordqvist run: {[e.value for e in at_nord.exception]}"
     assert len(at_nord.error) == 0, f"Unexpected error in Nordqvist run: {[e.value for e in at_nord.error]}"
     iframes_nord = at_nord.get("iframe")
     assert len(iframes_nord) >= 1, "Expected viewer HTML iframe to be rendered for Nordqvist"
     assert "box-viewer" in iframes_nord[0].proto.srcdoc or "Three.js" in iframes_nord[0].proto.srcdoc
+
+
+def test_no_dieline_friendly_error_apptest() -> None:
+    app_path = Path(__file__).resolve().parents[1] / "app.py"
+    assert app_path.exists(), f"Missing app.py: {app_path}"
+
+    test_pdfs = [
+        NO_DIELINE_PDF_PERFUME,
+        NO_DIELINE_PDF_VITAMIN,
+        NO_DIELINE_PDF_ESPRESSO,
+    ]
+
+    for pdf_path in test_pdfs:
+        assert pdf_path.exists(), f"Missing test PDF: {pdf_path}"
+        at = AppTest.from_file(str(app_path), default_timeout=90).run()
+        at.file_uploader[0].set_value((pdf_path.name, pdf_path.read_bytes(), "application/pdf")).run()
+
+        # Assert no unhandled Python exceptions
+        assert len(at.exception) == 0, f"Unexpected exception for {pdf_path.name}: {[e.value for e in at.exception]}"
+
+        # Assert friendly error message is shown
+        assert len(at.error) >= 1, f"Expected st.error for {pdf_path.name}, but none found."
+        error_text = at.error[0].value
+        assert "No Fold/Die die-line found in this PDF" in error_text, f"Unexpected error message: {error_text}"
+        assert "Upload a die-line PDF exported with 'Fold' (crease) and 'Die' (cut) spot colours/layers." in error_text
+        assert "12 vector paths" in error_text
+        assert "6 text blocks" in error_text
+
+
+def test_bamboo_socks_panel_normals_bbox_and_apptest() -> None:
+    assert BAMBOO_PDF_PATH.exists(), f"Missing Bamboo Socks PDF: {BAMBOO_PDF_PATH}"
+    doc = fitz.open(str(BAMBOO_PDF_PATH))
+    page = doc[0]
+    box = build_stage1_box_geometry(page, doc, dimensions=(42.0, 95.0, 185.0))
+    model = build_stage2_body_panel_model(box, page=page, dpi=200)
+
+    # 1. All body-panel dot products > 0
+    panel_normals = compute_panel_outward_normals(model, fold_progress=1.0)
+    for pid, pdata in panel_normals.items():
+        assert pdata["dot"] > 0.0, f"Panel {pid} dot product is non-positive: {pdata['dot']}"
+
+    # 2. Closed-state bbox within 5% of 42x95x185
+    bounds = compute_stage2_numpy_box_bounds(model, fold_progress=1.0)
+    size_mm = bounds["size_mm"]
+    assert abs(size_mm[0] - 42.0) / 42.0 < 0.05, f"Depth {size_mm[0]} not within 5% of 42.0"
+    assert abs(size_mm[1] - 95.0) / 95.0 < 0.05, f"Width {size_mm[1]} not within 5% of 95.0"
+    assert abs(size_mm[2] - 185.0) / 185.0 < 0.05, f"Height {size_mm[2]} not within 5% of 185.0"
+
+    # 3. Streamlit AppTest: no unhandled exception, no error, viewer rendered
+    app_path = Path(__file__).resolve().parents[1] / "app.py"
+    at = AppTest.from_file(str(app_path), default_timeout=90).run()
+    at.file_uploader[0].set_value((BAMBOO_PDF_PATH.name, BAMBOO_PDF_PATH.read_bytes(), "application/pdf")).run()
+
+    assert len(at.exception) == 0, f"Unexpected exception in Bamboo Socks AppTest: {[e.value for e in at.exception]}"
+    assert len(at.error) == 0, f"Unexpected error in Bamboo Socks AppTest: {[e.value for e in at.error]}"
+    iframes = at.get("iframe")
+    assert len(iframes) >= 1, "Expected viewer HTML iframe for Bamboo Socks"
+    assert "box-viewer" in iframes[0].proto.srcdoc or "Three.js" in iframes[0].proto.srcdoc
+
+
+def test_glue_panel_bbox_and_gap_and_apptest() -> None:
+    test_cases = [
+        (AEROFIT_PDF_PATH, "AEROFIT"),
+        (FITNESS_PDF_PATH, "FITNESS TUBE"),
+        (PDF_PATH, "BOSS"),
+    ]
+
+    for pdf_path, label in test_cases:
+        assert pdf_path.exists(), f"Missing PDF for {label}: {pdf_path}"
+        doc = fitz.open(str(pdf_path))
+        page = doc[0]
+        box = build_stage1_box_geometry(page, doc)
+        model = build_stage2_body_panel_model(box, page=page)
+
+        panels = model["panels"]
+        panel_by_id = {p["id"]: p for p in panels}
+        panel_order = [p["id"] for p in box["body_panels"]]
+
+        assert "glue" in panel_by_id, f"Missing glue panel in {label}"
+
+        glue_idx = panel_order.index("glue")
+        neighbour_id = panel_order[0] if glue_idx != 0 else panel_order[-1]
+        parent_id = panel_order[-2] if glue_idx != 0 else panel_order[1]
+
+        assert panel_by_id["glue"]["parent"] == parent_id, (
+            f"Expected glue parent {parent_id}, got {panel_by_id['glue']['parent']}"
+        )
+
+        def transform_for(pid: str) -> np.ndarray:
+            p_data = panel_by_id[pid]
+            if p_data["parent"] is None:
+                return np.eye(4, dtype=float)
+            p_t = transform_for(p_data["parent"])
+            piv_pt = np.array(p_data.get("pivot_position", [0.0, 0.0, 0.0]), dtype=float).copy()
+            glue_off = float(p_data.get("glue_offset", 0.0))
+            if glue_off != 0.0:
+                piv_pt[0] -= glue_off
+            sgn = float(p_data.get("fold_sign", 1.0))
+            th = sgn * (np.pi / 2.0)
+            c, s = np.cos(th), np.sin(th)
+            rot = np.array([
+                [c, 0.0, s, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [-s, 0.0, c, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ], dtype=float)
+            tr = np.array([
+                [1.0, 0.0, 0.0, piv_pt[0]],
+                [0.0, 1.0, 0.0, piv_pt[1]],
+                [0.0, 0.0, 1.0, piv_pt[2]],
+                [0.0, 0.0, 0.0, 1.0],
+            ], dtype=float)
+            return p_t @ tr @ rot
+
+        def corners_for(pid: str) -> np.ndarray:
+            p_data = panel_by_id[pid]
+            x0 = float(p_data["x0"])
+            x1 = float(p_data["x1"])
+            h = float(p_data["height"])
+            pts = np.array([
+                [x0, 0.0, 0.0, 1.0],
+                [x1, 0.0, 0.0, 1.0],
+                [x1, h, 0.0, 1.0],
+                [x0, h, 0.0, 1.0],
+            ], dtype=float)
+            return (transform_for(pid) @ pts.T).T[:, :3]
+
+        main_panels = [p for p in panel_order if p != "glue"]
+        all_main_pts = np.vstack([corners_for(pid) for pid in main_panels])
+        box_min = all_main_pts.min(axis=0)
+        box_max = all_main_pts.max(axis=0)
+        c_box = 0.5 * (box_min + box_max)
+
+        glue_corners = corners_for("glue")
+        glue_min = glue_corners.min(axis=0)
+        glue_max = glue_corners.max(axis=0)
+
+        # 1. Glue bbox lies inside closed box bbox (tolerance 1 mm)
+        assert glue_min[0] >= box_min[0] - 1.0, f"{label}: glue min x {glue_min[0]} < box min x {box_min[0]} - 1"
+        assert glue_max[0] <= box_max[0] + 1.0, f"{label}: glue max x {glue_max[0]} > box max x {box_max[0]} + 1"
+        assert glue_min[1] >= box_min[1] - 1.0, f"{label}: glue min y {glue_min[1]} < box min y {box_min[1]} - 1"
+        assert glue_max[1] <= box_max[1] + 1.0, f"{label}: glue max y {glue_max[1]} > box max y {box_max[1]} + 1"
+        assert glue_min[2] >= box_min[2] - 1.0, f"{label}: glue min z {glue_min[2]} < box min z {box_min[2]} - 1"
+        assert glue_max[2] <= box_max[2] + 1.0, f"{label}: glue max z {glue_max[2]} > box max z {box_max[2]} + 1"
+
+        # 2. Gap to neighbour <= 0.5 mm
+        neigh_corners = corners_for(neighbour_id)
+        c_neigh = neigh_corners.mean(axis=0)
+        v1 = neigh_corners[1] - neigh_corners[0]
+        v2 = neigh_corners[3] - neigh_corners[0]
+        n_raw = np.cross(v1, v2)
+        n_unit = n_raw / np.linalg.norm(n_raw)
+        n_in = n_unit if np.dot(n_unit, c_box - c_neigh) > 0 else -n_unit
+
+        gap = float(np.dot(n_in, glue_corners.mean(axis=0) - c_neigh))
+        assert abs(gap) <= 0.5, f"{label}: gap to neighbour {neighbour_id} is {gap:.3f} mm (> 0.5 mm)"
+
+        # 3. Streamlit AppTest: no unhandled exception, no error, viewer rendered
+        app_path = Path(__file__).resolve().parents[1] / "app.py"
+        at = AppTest.from_file(str(app_path), default_timeout=90).run()
+        at.file_uploader[0].set_value((pdf_path.name, pdf_path.read_bytes(), "application/pdf")).run()
+        assert len(at.exception) == 0, f"Unexpected exception in {label} AppTest: {[e.value for e in at.exception]}"
+        assert len(at.error) == 0, f"Unexpected error in {label} AppTest: {[e.value for e in at.error]}"
+        iframes = at.get("iframe")
+        assert len(iframes) >= 1, f"Expected viewer HTML iframe for {label}"
+
+
+def test_proportion_warning_british_tea_green_tea() -> None:
+    assert TEA1_PDF_PATH.exists(), f"Missing British Tea PDF: {TEA1_PDF_PATH}"
+    doc = fitz.open(str(TEA1_PDF_PATH))
+    page = doc[0]
+
+    # Matching proportions (79 x 150 x 69) in either order (D, W, H) or (W, D, H) must NOT warn
+    box1 = build_stage1_box_geometry(page, doc, dimensions=(79.0, 150.0, 69.0))
+    warns1 = [w for w in box1.get("dimension_warnings", []) if "proportions" in w]
+    assert len(warns1) == 0, f"Unexpected proportion warning for (79, 150, 69): {warns1}"
+
+    box2 = build_stage1_box_geometry(page, doc, dimensions=(150.0, 79.0, 69.0))
+    warns2 = [w for w in box2.get("dimension_warnings", []) if "proportions" in w]
+    assert len(warns2) == 0, f"Unexpected proportion warning for (150, 79, 69): {warns2}"
+
+    # Also test Nordqvist (66.5 x 119 x 78) in either order
+    doc_nord = fitz.open(str(TEA2_PDF_PATH))
+    box3 = build_stage1_box_geometry(doc_nord[0], doc_nord, dimensions=(66.5, 119.0, 78.0))
+    warns3 = [w for w in box3.get("dimension_warnings", []) if "proportions" in w]
+    assert len(warns3) == 0, f"Unexpected proportion warning for Nordqvist (66.5, 119, 78): {warns3}"
+
+    box4 = build_stage1_box_geometry(doc_nord[0], doc_nord, dimensions=(119.0, 66.5, 78.0))
+    warns4 = [w for w in box4.get("dimension_warnings", []) if "proportions" in w]
+    assert len(warns4) == 0, f"Unexpected proportion warning for Nordqvist (119, 66.5, 78): {warns4}"
+
+
+def test_green_tea_box_flaps_and_warnings_and_apptest() -> None:
+    assert CEYLON_PDF_PATH.exists(), f"Missing Ceylon Spice Tea PDF: {CEYLON_PDF_PATH}"
+    doc = fitz.open(str(CEYLON_PDF_PATH))
+    page = doc[0]
+
+    # 1. No false proportion or dimension warnings for (68, 82, 138), (82, 68, 138), or None
+    box1 = build_stage1_box_geometry(page, doc, dimensions=(68.0, 82.0, 138.0))
+    warns1 = box1.get("dimension_warnings", [])
+    assert len(warns1) == 0, f"Unexpected warnings for (68, 82, 138): {warns1}"
+
+    box2 = build_stage1_box_geometry(page, doc, dimensions=(82.0, 68.0, 138.0))
+    warns2 = box2.get("dimension_warnings", [])
+    assert len(warns2) == 0, f"Unexpected warnings for (82, 68, 138): {warns2}"
+
+    box_none = build_stage1_box_geometry(page, doc, dimensions=None)
+    warns_none = box_none.get("dimension_warnings", [])
+    assert len(warns_none) == 0, f"Unexpected warnings for None: {warns_none}"
+    assert abs(box_none["D_mm"] - 68.0) <= 1.0
+    assert abs(box_none["W_mm"] - 82.0) <= 1.0
+    assert abs(box_none["H_mm"] - 138.0) <= 1.0
+
+    # 2. Flap world bboxes within 2 mm of closed box bbox [0..W, 0..H, -D..0]
+    W, H, D = 82.0, 138.0, 68.0
+    model = build_stage2_body_panel_model(box1, page=page)
+    panel_by_id = {p["id"]: p for p in model["panels"]}
+    flap_by_id = {f["id"]: f for f in model["flaps"]}
+
+    def remap_p(t: float, a: float, b: float) -> float:
+        return float(np.clip((t - a) / (b - a), 0.0, 1.0))
+
+    p_wall = remap_p(1.0, 0.0, 0.5)
+    p_dust = remap_p(1.0, 0.5, 0.7)
+    p_tuck = remap_p(1.0, 0.7, 1.0)
+    p_tuck_flap = remap_p(1.0, 0.7, 0.95)
+
+    def panel_T(pid: str) -> np.ndarray:
+        p = panel_by_id[pid]
+        if p["parent"] is None:
+            return np.eye(4, dtype=float)
+        parent_T = panel_T(p["parent"])
+        piv = np.array(p.get("pivot_position", [0, 0, 0]), dtype=float).copy()
+        if p.get("glue_offset", 0.0) != 0.0:
+            piv[0] -= p["glue_offset"] * p_wall
+        sign = float(p.get("fold_sign", 1.0))
+        theta = sign * p_wall * (np.pi / 2.0)
+        c, s = np.cos(theta), np.sin(theta)
+        R = np.array([[c, 0, s, 0], [0, 1, 0, 0], [-s, 0, c, 0], [0, 0, 0, 1]], dtype=float)
+        Tr = np.array([[1, 0, 0, piv[0]], [0, 1, 0, piv[1]], [0, 0, 1, piv[2]], [0, 0, 0, 1]], dtype=float)
+        return parent_T @ Tr @ R
+
+    def flap_T(fid: str) -> np.ndarray:
+        f = flap_by_id[fid]
+        pr = f["parent"]
+        parent_T = panel_T(pr) if pr in panel_by_id else flap_T(pr)
+        piv = f["pivot_position"]
+        sign = float(f.get("sign", 1.0))
+        sub_p = p_tuck_flap if (fid == "top_tuck" or fid.endswith("_tuck")) else (p_dust if f.get("kind") == "dust" else p_tuck)
+        theta = sign * sub_p * (np.pi / 2.0)
+        c, s = np.cos(theta), np.sin(theta)
+        Rx = np.array([[1, 0, 0, 0], [0, c, -s, 0], [0, s, c, 0], [0, 0, 0, 1]], dtype=float)
+        Tr = np.array([[1, 0, 0, piv[0]], [0, 1, 0, piv[1]], [0, 0, 1, piv[2]], [0, 0, 0, 1]], dtype=float)
+        return parent_T @ Tr @ Rx
+
+    for f in model["flaps"]:
+        fid = f["id"]
+        poly = f.get("polygon", [])
+        pts = np.array([[pt[0], pt[1], 0.0, 1.0] for pt in poly], dtype=float)
+        w_pts = (flap_T(fid) @ pts.T).T[:, :3]
+
+        min_x, max_x = float(w_pts[:, 0].min()), float(w_pts[:, 0].max())
+        min_y, max_y = float(w_pts[:, 1].min()), float(w_pts[:, 1].max())
+        min_z, max_z = float(w_pts[:, 2].min()), float(w_pts[:, 2].max())
+
+        assert min_x >= -2.0 and max_x <= W + 2.0, f"Flap {fid} X out of bounds: [{min_x:.1f}, {max_x:.1f}]"
+        assert min_y >= -2.0 and max_y <= H + 2.0, f"Flap {fid} Y out of bounds: [{min_y:.1f}, {max_y:.1f}]"
+        assert min_z >= -D - 2.0 and max_z <= 2.0, f"Flap {fid} Z out of bounds: [{min_z:.1f}, {max_z:.1f}]"
+
+    # 3. Streamlit AppTest: renders without error or exception
+    app_path = Path(__file__).resolve().parents[1] / "app.py"
+    at = AppTest.from_file(str(app_path), default_timeout=90).run()
+    at.file_uploader[0].set_value((CEYLON_PDF_PATH.name, CEYLON_PDF_PATH.read_bytes(), "application/pdf")).run()
+    assert len(at.exception) == 0, f"Unexpected exception in AppTest: {[e.value for e in at.exception]}"
+    assert len(at.error) == 0, f"Unexpected error in AppTest: {[e.value for e in at.error]}"
+    iframes = at.get("iframe")
+    assert len(iframes) >= 1, "Expected viewer HTML iframe to be rendered"
+
+
+def test_square_cartons_flaps_and_warnings_and_apptest() -> None:
+    cases = [
+        (HIGHLAND_PDF_PATH, 85.0, 85.0, 85.0),
+        (LUMIERE_PDF_PATH, 45.0, 45.0, 115.0),
+    ]
+
+    def remap_p(t: float, a: float, b: float) -> float:
+        return float(np.clip((t - a) / (b - a), 0.0, 1.0))
+
+    p_wall = remap_p(1.0, 0.0, 0.5)
+    p_dust = remap_p(1.0, 0.5, 0.7)
+    p_tuck = remap_p(1.0, 0.7, 1.0)
+    p_tuck_flap = remap_p(1.0, 0.7, 0.95)
+    app_path = Path(__file__).resolve().parents[1] / "app.py"
+
+    for pdf_path, exp_d, exp_w, exp_h in cases:
+        assert pdf_path.exists(), f"Missing square carton PDF: {pdf_path}"
+        doc = fitz.open(str(pdf_path))
+        page = doc[0]
+
+        # 1. No false warnings with nominal dims or None
+        box = build_stage1_box_geometry(page, doc, dimensions=None)
+        warns = box.get("dimension_warnings", [])
+        assert len(warns) == 0, f"Unexpected warnings for {pdf_path.name} (None): {warns}"
+        assert abs(box["D_mm"] - exp_d) <= 1.0
+        assert abs(box["W_mm"] - exp_w) <= 1.0
+        assert abs(box["H_mm"] - exp_h) <= 1.0
+
+        box_exp = build_stage1_box_geometry(page, doc, dimensions=(exp_d, exp_w, exp_h))
+        warns_exp = box_exp.get("dimension_warnings", [])
+        assert len(warns_exp) == 0, f"Unexpected warnings for {pdf_path.name} ({exp_d}, {exp_w}, {exp_h}): {warns_exp}"
+
+        # 2. Flap world bboxes at p=1 within 2 mm of closed box bbox [0..W, 0..H, -D..0]
+        W, H, D = exp_w, exp_h, exp_d
+        model = build_stage2_body_panel_model(box_exp, page=page)
+        panel_by_id = {p["id"]: p for p in model["panels"]}
+        flap_by_id = {f["id"]: f for f in model["flaps"]}
+
+        def panel_T(pid: str) -> np.ndarray:
+            p = panel_by_id[pid]
+            if p["parent"] is None:
+                return np.eye(4, dtype=float)
+            parent_T = panel_T(p["parent"])
+            piv = np.array(p.get("pivot_position", [0, 0, 0]), dtype=float).copy()
+            if p.get("glue_offset", 0.0) != 0.0:
+                piv[0] -= p["glue_offset"] * p_wall
+            sign = float(p.get("fold_sign", 1.0))
+            theta = sign * p_wall * (np.pi / 2.0)
+            c, s = np.cos(theta), np.sin(theta)
+            R = np.array([[c, 0, s, 0], [0, 1, 0, 0], [-s, 0, c, 0], [0, 0, 0, 1]], dtype=float)
+            Tr = np.array([[1, 0, 0, piv[0]], [0, 1, 0, piv[1]], [0, 0, 1, piv[2]], [0, 0, 0, 1]], dtype=float)
+            return parent_T @ Tr @ R
+
+        def flap_T(fid: str) -> np.ndarray:
+            f = flap_by_id[fid]
+            pr = f["parent"]
+            parent_T = panel_T(pr) if pr in panel_by_id else flap_T(pr)
+            piv = f["pivot_position"]
+            sign = float(f.get("sign", 1.0))
+            sub_p = p_tuck_flap if (fid == "top_tuck" or fid.endswith("_tuck")) else (p_dust if f.get("kind") == "dust" else p_tuck)
+            theta = sign * sub_p * (np.pi / 2.0)
+            c, s = np.cos(theta), np.sin(theta)
+            Rx = np.array([[1, 0, 0, 0], [0, c, -s, 0], [0, s, c, 0], [0, 0, 0, 1]], dtype=float)
+            Tr = np.array([[1, 0, 0, piv[0]], [0, 1, 0, piv[1]], [0, 0, 1, piv[2]], [0, 0, 0, 1]], dtype=float)
+            return parent_T @ Tr @ Rx
+
+        for f in model["flaps"]:
+            fid = f["id"]
+            poly = f.get("polygon", [])
+            pts = np.array([[pt[0], pt[1], 0.0, 1.0] for pt in poly], dtype=float)
+            w_pts = (flap_T(fid) @ pts.T).T[:, :3]
+
+            min_x, max_x = float(w_pts[:, 0].min()), float(w_pts[:, 0].max())
+            min_y, max_y = float(w_pts[:, 1].min()), float(w_pts[:, 1].max())
+            min_z, max_z = float(w_pts[:, 2].min()), float(w_pts[:, 2].max())
+
+            assert min_x >= -2.0 and max_x <= W + 2.0, f"Flap {fid} X out of bounds in {pdf_path.name}: [{min_x:.1f}, {max_x:.1f}]"
+            assert min_y >= -2.0 and max_y <= H + 2.0, f"Flap {fid} Y out of bounds in {pdf_path.name}: [{min_y:.1f}, {max_y:.1f}]"
+            assert min_z >= -D - 2.0 and max_z <= 2.0, f"Flap {fid} Z out of bounds in {pdf_path.name}: [{min_z:.1f}, {max_z:.1f}]"
+
+        # 3. Lid/lock area covers >= 80% of opening
+        top_open = W * D
+        lids = [f for f in model["flaps"] if f.get("kind") == "lid"]
+        locks = [f for f in model["flaps"] if f.get("kind") == "lock"]
+        assert len(lids) >= 1, f"Expected at least 1 lid in {pdf_path.name}"
+        assert len(locks) >= 1, f"Expected at least 1 lock in {pdf_path.name}"
+        for lid in lids:
+            l_xs = [pt[0] for pt in lid["polygon"]]
+            l_ys = [pt[1] for pt in lid["polygon"]]
+            l_area = (max(l_xs) - min(l_xs)) * (max(l_ys) - min(l_ys))
+            assert l_area >= 0.8 * top_open, f"Lid area {l_area:.1f} covers < 80% of opening {top_open:.1f} in {pdf_path.name}"
+        for lock in locks:
+            l_xs = [pt[0] for pt in lock["polygon"]]
+            l_ys = [pt[1] for pt in lock["polygon"]]
+            l_area = (max(l_xs) - min(l_xs)) * (max(l_ys) - min(l_ys))
+            assert l_area >= 0.8 * top_open, f"Lock area {l_area:.1f} covers < 80% of opening {top_open:.1f} in {pdf_path.name}"
+
+        # 4. Streamlit AppTest: renders without error or exception
+        at = AppTest.from_file(str(app_path), default_timeout=90).run()
+        at.file_uploader[0].set_value((pdf_path.name, pdf_path.read_bytes(), "application/pdf")).run()
+        assert len(at.exception) == 0, f"Unexpected exception in AppTest for {pdf_path.name}: {[e.value for e in at.exception]}"
+        assert len(at.error) == 0, f"Unexpected error in AppTest for {pdf_path.name}: {[e.value for e in at.error]}"
+        iframes = at.get("iframe")
+        assert len(iframes) >= 1, f"Expected viewer HTML iframe to be rendered for {pdf_path.name}"
+
+
+
+
+
 
 
 

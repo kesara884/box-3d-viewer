@@ -873,6 +873,8 @@ def filter_structural_linework(
     4. Fold sensor eye marks & interior strokes: Drop fold strokes forming a small closed square (< 10x10 mm)
        or lying entirely inside a body panel.
     """
+    if scale_pt_per_mm <= 0 or math.isnan(scale_pt_per_mm):
+        raise ValueError(f"Invalid scale_pt_per_mm in filter_structural_linework: {scale_pt_per_mm}. Must be positive and non-zero.")
     stats = {
         "dropped_artwork_cuts": 0,
         "dropped_perf_cuts": 0,
@@ -983,6 +985,8 @@ def measure_pdf_nominal_dims(page: fitz.Page, doc: fitz.Document | None = None) 
 
         scale_est = 72.0 / 25.4
         cg, cr, _ = filter_structural_linework(green_lines, red_lines, scale_est, page.rect.height)
+        if len(cg) < 1 or len(cr) < 1:
+            return None
 
         vert_creases = [
             l["geom"] for l in cg
@@ -1032,11 +1036,15 @@ def _segment_axis(segment: LineString) -> str:
 
 
 def _pt_to_mm(pt_value: float, pt_per_mm: float) -> float:
+    if pt_per_mm <= 0 or math.isnan(pt_per_mm):
+        raise ValueError(f"Invalid pt_per_mm scale factor: {pt_per_mm}. Must be positive and non-zero.")
     return float(pt_value / pt_per_mm)
 
 
 def _page_point_to_mm(point: Tuple[float, float], scale_pt_per_mm: float, origin_pt: Tuple[float, float]) -> Tuple[float, float]:
     """Convert a page point to a normalized mm coordinate system with a Y flip and origin at the front panel's bottom-left."""
+    if scale_pt_per_mm <= 0 or math.isnan(scale_pt_per_mm):
+        raise ValueError(f"Invalid scale_pt_per_mm: {scale_pt_per_mm}. Must be positive and non-zero.")
     x, y = point
     x_origin, y_origin = origin_pt
     x_mm = (x - x_origin) / float(scale_pt_per_mm)
@@ -1190,6 +1198,8 @@ def _extract_real_flap_polygons(
     if green_lines is None:
         green_lines = []
 
+    if scale_pt_per_mm <= 0 or math.isnan(scale_pt_per_mm):
+        raise ValueError(f"Invalid scale_pt_per_mm in build_die_flaps_for_body_panels: {scale_pt_per_mm}. Must be positive and non-zero.")
     snap_tol = 3.0 / scale_pt_per_mm
     die_geom = [item["geom"] for item in red_lines if item.get("geom") is not None and not item["geom"].is_empty]
     green_geom = [item["geom"] for item in green_lines if item.get("geom") is not None and not item["geom"].is_empty]
@@ -1228,59 +1238,59 @@ def _extract_real_flap_polygons(
             used_die_indices.update(band_indices)
             collected = [die_geom[i] for i in band_indices]
 
-            # Find horizontal subcreases inside this band (only for wide panels where lids and tucks exist)
+            # Find horizontal subcreases inside this band for ANY panel
             valid_subcreases = []
-            if "side" not in pid:
-                cand_segments = []
-                for gl in green_geom:
-                    if gl.intersects(band):
-                        coords = list(gl.coords)
-                        dx = abs(coords[-1][0] - coords[0][0])
-                        dy = abs(coords[-1][1] - coords[0][1])
-                        mid_x = (coords[0][0] + coords[-1][0]) / 2.0
-                        if x0 - 2.0 <= mid_x <= x1 + 2.0 and dx > 1.5 * dy and gl.length >= 3.0:
-                            cy = (coords[0][1] + coords[-1][1]) / 2.0
-                            if side == "top" and cy > H_mm + 5.0:
-                                cand_segments.append((cy, gl))
-                            elif side == "bottom" and cy < -5.0:
-                                cand_segments.append((cy, gl))
+            cand_segments = []
+            for gl in green_geom:
+                if gl.intersects(band):
+                    coords = list(gl.coords)
+                    dx = abs(coords[-1][0] - coords[0][0])
+                    dy = abs(coords[-1][1] - coords[0][1])
+                    mid_x = (coords[0][0] + coords[-1][0]) / 2.0
+                    if x0 - 2.0 <= mid_x <= x1 + 2.0 and dx > 1.5 * dy and gl.length >= 3.0:
+                        cy = (coords[0][1] + coords[-1][1]) / 2.0
+                        if side == "top" and cy > H_mm + 5.0:
+                            cand_segments.append((cy, gl))
+                        elif side == "bottom" and cy < -5.0:
+                            cand_segments.append((cy, gl))
 
-                # Group fragmented crease segments around the same Y coordinate (within 2mm)
-                grouped_subcreases = []
-                for cy, gl in cand_segments:
-                    matched = False
-                    for g in grouped_subcreases:
-                        if abs(cy - g["y"]) <= 2.0:
-                            g["lines"].append(gl)
-                            g["min_x"] = min(g["min_x"], gl.bounds[0])
-                            g["max_x"] = max(g["max_x"], gl.bounds[2])
-                            g["tot_len"] += gl.length
-                            matched = True
-                            break
-                    if not matched:
-                        grouped_subcreases.append({
-                            "y": cy,
-                            "lines": [gl],
-                            "min_x": gl.bounds[0],
-                            "max_x": gl.bounds[2],
-                            "tot_len": gl.length,
-                        })
-
-                # Filter valid subcreases: total length >= 0.25 * panel_w or span >= 0.4 * panel_w
+            # Group fragmented crease segments around the same Y coordinate (within 2mm)
+            grouped_subcreases = []
+            for cy, gl in cand_segments:
+                matched = False
                 for g in grouped_subcreases:
-                    span = g["max_x"] - g["min_x"]
-                    if g["tot_len"] >= 0.25 * panel_w or span >= 0.4 * panel_w:
-                        valid_subcreases.append(g)
+                    if abs(cy - g["y"]) <= 2.0:
+                        g["lines"].append(gl)
+                        g["min_x"] = min(g["min_x"], gl.bounds[0])
+                        g["max_x"] = max(g["max_x"], gl.bounds[2])
+                        g["tot_len"] += gl.length
+                        matched = True
+                        break
+                if not matched:
+                    grouped_subcreases.append({
+                        "y": cy,
+                        "lines": [gl],
+                        "min_x": gl.bounds[0],
+                        "max_x": gl.bounds[2],
+                        "tot_len": gl.length,
+                    })
 
-                # A lid has ONE tuck flap! If multiple subcreases exist on a lid (e.g. front_top having 30mm and 65mm):
-                # Filter to keep the tuck crease closest to D_mm (outer tuck crease).
-                if len(valid_subcreases) > 1 and D_mm > 0:
-                    valid_subcreases.sort(key=lambda s: abs(abs(s["y"] - y_off) - D_mm))
-                    chosen = valid_subcreases[0]
-                    ignored = valid_subcreases[1:]
-                    for ig in ignored:
-                        print(f"[{pid}_{side}] Removing duplicate subcrease at y={ig['y']:.2f} (dist={abs(ig['y'] - y_off):.1f}mm), keeping tuck crease at y={chosen['y']:.2f} (dist={abs(chosen['y'] - y_off):.1f}mm)")
-                    valid_subcreases = [chosen]
+            # Filter valid subcreases: total length >= 0.25 * panel_w or span >= 0.4 * panel_w
+            for g in grouped_subcreases:
+                span = g["max_x"] - g["min_x"]
+                if g["tot_len"] >= 0.25 * panel_w or span >= 0.4 * panel_w:
+                    valid_subcreases.append(g)
+
+            # A lid has ONE tuck flap! If multiple subcreases exist on a lid (e.g. front_top having 30mm and 65mm):
+            # Filter to keep the tuck crease closest to D_mm (outer tuck crease).
+            tuck_target = D_mm if D_mm > 0 else 50.0
+            if len(valid_subcreases) > 1:
+                valid_subcreases.sort(key=lambda s: abs(abs(s["y"] - y_off) - tuck_target))
+                chosen = valid_subcreases[0]
+                ignored = valid_subcreases[1:]
+                for ig in ignored:
+                    print(f"[{pid}_{side}] Removing duplicate subcrease at y={ig['y']:.2f} (dist={abs(ig['y'] - y_off):.1f}mm), keeping tuck crease at y={chosen['y']:.2f} (dist={abs(chosen['y'] - y_off):.1f}mm)")
+                valid_subcreases = [chosen]
 
             # Build subcrease line spanning across the panel width to bridge cut notches
             sub_lines = []
@@ -1345,7 +1355,18 @@ def _extract_real_flap_polygons(
                         fid = f"{base_fid}_{suffix}"
                         suffix += 1
                     parent_id = pid
-                    kind = "dust" if "side" in pid else ("lid" if side == "top" else "lock")
+                    carries_chained_tuck = (matched_sub_y is not None and shared_sub >= 0.4 * panel_w)
+                    flap_free_len = (p.bounds[3] - H_mm) if side == "top" else (0.0 - p.bounds[1])
+
+                    # In a standard tuck-end carton, a flap that carries a chained crease/tuck
+                    # or spans full opening depth (>= 0.68 * D_mm on wide panels) is a lid/lock.
+                    # A short flap (< 0.65 * D_mm) without a chained tuck is a dust flap.
+                    if carries_chained_tuck:
+                        kind = "lid" if side == "top" else "lock"
+                    elif flap_free_len >= 0.68 * D_mm and ("side" not in pid or flap_free_len >= 0.9 * D_mm):
+                        kind = "lid" if side == "top" else "lock"
+                    else:
+                        kind = "dust"
                     hinge_y = H_mm if side == "top" else 0.0
                     hinge_p0 = (x0, hinge_y)
                     hinge_p1 = (x1, hinge_y)
@@ -1496,6 +1517,10 @@ def build_stage1_box_geometry(
 
     scale_est = 72.0 / 25.4
     cg, cr, filter_stats = filter_structural_linework(green_lines, red_lines, scale_est, page.rect.height)
+    if len(cg) < 1:
+        raise ValueError("No Fold (crease) lines remained after filtering.")
+    if len(cr) < 1:
+        raise ValueError("No Die (cut) lines remained after filtering.")
 
     # Vertical creases anchor body panels
     vert_creases = [
@@ -1534,20 +1559,35 @@ def build_stage1_box_geometry(
     has_glue_right = (w_end1 < 0.6 * w_end0)
 
     if has_glue_left:
-        if widths_pt[1] > widths_pt[2]:
-            panel_order = ["glue", "front", "side_b", "back", "side_a"]
-        else:
-            panel_order = ["glue", "side_a", "front", "side_b", "back"]
+        glue_idx = 0
+        main_indices = list(range(1, len(widths_pt)))
     elif has_glue_right:
-        if widths_pt[-2] > widths_pt[-3]:
-            panel_order = ["side_a", "front", "side_b", "back", "glue"]
-        else:
-            panel_order = ["front", "side_b", "back", "side_a", "glue"]
+        glue_idx = len(widths_pt) - 1
+        main_indices = list(range(len(widths_pt) - 1))
     else:
-        panel_order = ["front", "side_b", "back", "side_a"]
+        glue_idx = None
+        main_indices = list(range(len(widths_pt)))
 
-    front_idx = panel_order.index("front")
+    max_main_w = max(widths_pt[i] for i in main_indices)
+    min_main_w = min(widths_pt[i] for i in main_indices)
+    wide_thresh = 0.5 * (min_main_w + max_main_w) if max_main_w > 1.05 * min_main_w else 0.95 * max_main_w
+    wide_indices = [i for i in main_indices if widths_pt[i] >= wide_thresh]
+    front_idx = wide_indices[0]
     front_w_pt = float(widths_pt[front_idx])
+
+    panel_order = [None] * len(widths_pt)
+    if glue_idx is not None:
+        panel_order[glue_idx] = "glue"
+    panel_order[front_idx] = "front"
+
+    if front_idx > 0 and (glue_idx is None or front_idx - 1 != glue_idx):
+        panel_order[front_idx - 1] = "side_a"
+        panel_order[front_idx + 1] = "side_b"
+        panel_order[front_idx + 2] = "back"
+    else:
+        panel_order[front_idx + 1] = "side_b"
+        panel_order[front_idx + 2] = "back"
+        panel_order[front_idx + 3] = "side_a"
 
     # Dimensions & scale
     if dimensions is not None:
@@ -1567,44 +1607,97 @@ def build_stage1_box_geometry(
                 D_mm = round(narrow_w_pt / scale_est, 1)
                 H_mm = round((y_max_v - y_min_v) / scale_est, 1)
 
-    scale_pt_per_mm = front_w_pt / W_mm if W_mm > 0 else 72.0 / 25.4
-    measured_H_mm = (y_max_v - y_min_v) / scale_pt_per_mm
-    narrow_idx = panel_order.index("side_b") if "side_b" in panel_order else 0
-    measured_D_mm = widths_pt[narrow_idx] / scale_pt_per_mm
+    if max_main_w <= 1.05 * min_main_w:
+        D_mm = max(D_mm, W_mm)
+        W_mm = D_mm
+
+    if W_mm <= 0 or math.isnan(W_mm):
+        raise ValueError(f"Invalid box width dimension: {W_mm}. Must be positive and non-zero.")
+    if D_mm <= 0 or math.isnan(D_mm):
+        raise ValueError(f"Invalid box depth dimension: {D_mm}. Must be positive and non-zero.")
+    if H_mm <= 0 or math.isnan(H_mm):
+        raise ValueError(f"Invalid box height dimension: {H_mm}. Must be positive and non-zero.")
+    if front_w_pt <= 0 or math.isnan(front_w_pt):
+        raise ValueError(f"Invalid front panel width: {front_w_pt}. Cannot compute scale factor.")
+
+    scale_pt_per_mm = front_w_pt / max(W_mm, D_mm)
+    if scale_pt_per_mm <= 0 or math.isnan(scale_pt_per_mm):
+        raise ValueError(f"Invalid scale_pt_per_mm: {scale_pt_per_mm}. Must be positive and non-zero.")
+
+    main_w_pts = [widths_pt[i] for i in main_indices]
+    meas_wide_pt = max(main_w_pts)
+    meas_narrow_pt = min(main_w_pts)
+    denom_h_meas = y_max_v - y_min_v
+
+    measured_H_mm = denom_h_meas / scale_pt_per_mm
+    meas_narrow_mm = meas_narrow_pt / scale_pt_per_mm
+    meas_wide_mm = meas_wide_pt / scale_pt_per_mm
+    measured_D_mm = meas_narrow_mm
 
     std_scale = 72.0 / 25.4
-    sugg_w = round(front_w_pt / std_scale)
-    sugg_d = round(widths_pt[narrow_idx] / std_scale)
-    sugg_h = round((y_max_v - y_min_v) / std_scale)
+    if std_scale <= 0 or math.isnan(std_scale):
+        raise ValueError(f"Invalid standard scale: {std_scale}.")
 
-    ratio_wd_meas = front_w_pt / widths_pt[narrow_idx] if widths_pt[narrow_idx] > 0 else 1.0
-    ratio_wh_meas = front_w_pt / (y_max_v - y_min_v) if (y_max_v - y_min_v) > 0 else 1.0
-    ratio_dh_meas = widths_pt[narrow_idx] / (y_max_v - y_min_v) if (y_max_v - y_min_v) > 0 else 1.0
+    sugg_nominal = measure_pdf_nominal_dims(page, doc)
+    if sugg_nominal is not None:
+        sugg_d, sugg_w, sugg_h = sugg_nominal
+    else:
+        sugg_w = round(meas_wide_pt / std_scale)
+        sugg_d = round(meas_narrow_pt / std_scale)
+        sugg_h = round(denom_h_meas / std_scale)
 
-    ratio_wd_entered = W_mm / D_mm if D_mm > 0 else 1.0
-    ratio_wh_entered = W_mm / H_mm if H_mm > 0 else 1.0
-    ratio_dh_entered = D_mm / H_mm if H_mm > 0 else 1.0
+    if meas_narrow_pt <= 0 or math.isnan(meas_narrow_pt):
+        raise ValueError(f"Invalid narrow panel width ({meas_narrow_pt}). Cannot compute measured ratios.")
+    if denom_h_meas <= 0 or math.isnan(denom_h_meas):
+        raise ValueError(f"Invalid body height ({denom_h_meas}). Cannot compute measured ratios.")
 
-    diff_wd = abs(ratio_wd_entered - ratio_wd_meas) / ratio_wd_meas if ratio_wd_meas > 0 else 0.0
-    diff_wh = abs(ratio_wh_entered - ratio_wh_meas) / ratio_wh_meas if ratio_wh_meas > 0 else 0.0
-    diff_dh = abs(ratio_dh_entered - ratio_dh_meas) / ratio_dh_meas if ratio_dh_meas > 0 else 0.0
+    ratio_wn_meas = meas_wide_pt / meas_narrow_pt
+    ratio_wh_meas = meas_wide_pt / denom_h_meas
+    ratio_nh_meas = meas_narrow_pt / denom_h_meas
+
+    if ratio_wn_meas <= 0 or math.isnan(ratio_wn_meas):
+        raise ValueError(f"Invalid measured wide/narrow ratio: {ratio_wn_meas}.")
+    if ratio_wh_meas <= 0 or math.isnan(ratio_wh_meas):
+        raise ValueError(f"Invalid measured wide/height ratio: {ratio_wh_meas}.")
+    if ratio_nh_meas <= 0 or math.isnan(ratio_nh_meas):
+        raise ValueError(f"Invalid measured narrow/height ratio: {ratio_nh_meas}.")
+
+    entered_wide = max(W_mm, D_mm)
+    entered_narrow = min(W_mm, D_mm)
+    entered_h = H_mm
+
+    ratio_wn_entered = entered_wide / entered_narrow
+    ratio_wh_entered = entered_wide / entered_h
+    ratio_nh_entered = entered_narrow / entered_h
+
+    if ratio_wn_entered <= 0 or math.isnan(ratio_wn_entered):
+        raise ValueError(f"Invalid entered wide/narrow ratio: {ratio_wn_entered}.")
+    if ratio_wh_entered <= 0 or math.isnan(ratio_wh_entered):
+        raise ValueError(f"Invalid entered wide/height ratio: {ratio_wh_entered}.")
+    if ratio_nh_entered <= 0 or math.isnan(ratio_nh_entered):
+        raise ValueError(f"Invalid entered narrow/height ratio: {ratio_nh_entered}.")
+
+    diff_wn = abs(ratio_wn_entered - ratio_wn_meas) / ratio_wn_meas
+    diff_wh = abs(ratio_wh_entered - ratio_wh_meas) / ratio_wh_meas
+    diff_nh = abs(ratio_nh_entered - ratio_nh_meas) / ratio_nh_meas
 
     dimension_warnings = []
-    if diff_wd > 0.05 or diff_wh > 0.05 or diff_dh > 0.05:
+    if diff_wn > 0.05 or diff_wh > 0.05 or diff_nh > 0.05:
         dimension_warnings.append(
             f"Measured fold-line proportions (wide panel : narrow panel : height = "
-            f"{ratio_wd_meas:.2f} : 1.00 : {1.0 / ratio_dh_meas:.2f}) "
-            f"differ from entered proportions ({ratio_wd_entered:.2f} : 1.00 : {1.0 / ratio_dh_entered:.2f}) by more than 5%. "
+            f"{ratio_wn_meas:.2f} : 1.00 : {1.0 / ratio_nh_meas:.2f}) "
+            f"differ from entered proportions ({ratio_wn_entered:.2f} : 1.00 : {1.0 / ratio_nh_entered:.2f}) by more than 5%. "
             f"Suggested likely dimensions from dieline: {sugg_d:.0f} x {sugg_w:.0f} x {sugg_h:.0f} mm."
         )
-    elif D_mm > 0 and abs(measured_D_mm - D_mm) / D_mm > 0.05:
+    elif (abs(meas_narrow_mm - entered_narrow) / entered_narrow > 0.05 or
+          abs(meas_wide_mm - entered_wide) / entered_wide > 0.05):
         dimension_warnings.append(
-            f"Measured depth ({measured_D_mm:.1f} mm) differs from entered depth ({D_mm:.1f} mm) by more than 5%. "
+            f"Measured dimensions ({meas_narrow_mm:.1f} x {meas_wide_mm:.1f} mm) differ from entered dimensions ({entered_narrow:.1f} x {entered_wide:.1f} mm) by more than 5%. "
             f"Suggested dimensions: {sugg_d:.0f} x {sugg_w:.0f} x {sugg_h:.0f} mm."
         )
-    elif H_mm > 0 and abs(measured_H_mm - H_mm) / H_mm > 0.05:
+    elif abs(measured_H_mm - entered_h) / entered_h > 0.05:
         dimension_warnings.append(
-            f"Measured height ({measured_H_mm:.1f} mm) differs from entered height ({H_mm:.1f} mm) by more than 5%. "
+            f"Measured height ({measured_H_mm:.1f} mm) differs from entered height ({entered_h:.1f} mm) by more than 5%. "
             f"Suggested dimensions: {sugg_d:.0f} x {sugg_w:.0f} x {sugg_h:.0f} mm."
         )
 
@@ -1614,6 +1707,8 @@ def build_stage1_box_geometry(
     origin_pt = (x_origin_pt, y_origin_pt)
 
     def pt_to_mm_x(pt: float) -> float:
+        if scale_pt_per_mm <= 0 or math.isnan(scale_pt_per_mm):
+            raise ValueError(f"Invalid scale_pt_per_mm in pt_to_mm_x: {scale_pt_per_mm}. Must be positive and non-zero.")
         return float((pt - x_origin_pt) / scale_pt_per_mm)
 
     # Convert all linework to unified mm system with origin at front panel bottom-left
@@ -1621,65 +1716,38 @@ def build_stage1_box_geometry(
     red_lines_mm = [{**entry, "geom": _geom_to_mm(entry["geom"], scale_pt_per_mm, origin_pt)} for entry in cr]
 
     body_panels: List[Dict[str, Any]] = []
+    main_panels_map: Dict[str, Dict[str, Any]] = {}
     for idx, pid in enumerate(panel_order):
+        if pid == "glue":
+            continue
         x0_mm = pt_to_mm_x(all_x[idx])
         x1_mm = pt_to_mm_x(all_x[idx + 1])
         w_mm = x1_mm - x0_mm
         poly = Polygon([(x0_mm, 0.0), (x1_mm, 0.0), (x1_mm, measured_H_mm), (x0_mm, measured_H_mm)])
 
         # Kinematic pivot / parent setup
-        if pid == "front":
+        if idx == front_idx:
             parent = None
             piv = [0.0, 0.0, 0.0]
             sign = 0.0
-            glue_off = 0.0
             local_x0, local_x1 = 0.0, w_mm
-        elif pid == "glue" and has_glue_left:
-            parent = "front"
-            piv = [0.0, 0.0, 0.0]
+        elif idx > front_idx:
+            parent = panel_order[idx - 1]
+            parent_w = widths_pt[idx - 1] / scale_pt_per_mm
+            piv = [parent_w, 0.0, 0.0]
+            sign = 1.0
+            local_x0, local_x1 = 0.0, w_mm
+        else:  # idx < front_idx
+            parent = panel_order[idx + 1]
+            if idx + 1 == front_idx:
+                piv = [0.0, 0.0, 0.0]
+            else:
+                parent_w = widths_pt[idx + 1] / scale_pt_per_mm
+                piv = [-parent_w, 0.0, 0.0]
             sign = -1.0
-            glue_off = -0.20
             local_x0, local_x1 = -w_mm, 0.0
-        elif pid == "side_a" and has_glue_right:
-            parent = "front"
-            piv = [0.0, 0.0, 0.0]
-            sign = -1.0
-            glue_off = 0.0
-            local_x0, local_x1 = -w_mm, 0.0
-        elif pid == "side_b":
-            parent = "front"
-            piv = [front_w_pt / scale_pt_per_mm, 0.0, 0.0]
-            sign = 1.0
-            glue_off = 0.0
-            local_x0, local_x1 = 0.0, w_mm
-        elif pid == "back":
-            parent = "side_b"
-            piv = [widths_pt[panel_order.index("side_b")] / scale_pt_per_mm, 0.0, 0.0]
-            sign = 1.0
-            glue_off = 0.0
-            local_x0, local_x1 = 0.0, w_mm
-        elif pid == "side_a" and has_glue_left:
-            parent = "back"
-            piv = [widths_pt[panel_order.index("back")] / scale_pt_per_mm, 0.0, 0.0]
-            sign = 1.0
-            glue_off = 0.0
-            local_x0, local_x1 = 0.0, w_mm
-        elif pid == "glue" and has_glue_right:
-            parent = "back"
-            back_w = widths_pt[panel_order.index("back")] / scale_pt_per_mm
-            front_w = front_w_pt / scale_pt_per_mm
-            glue_off = back_w - (front_w - 0.20)
-            piv = [back_w, 0.0, 0.0]
-            sign = 1.0
-            local_x0, local_x1 = 0.0, w_mm
-        else:
-            parent = "front"
-            piv = [0.0, 0.0, 0.0]
-            sign = 1.0
-            glue_off = 0.0
-            local_x0, local_x1 = 0.0, w_mm
 
-        body_panels.append({
+        panel_dict = {
             "id": pid,
             "parent": parent,
             "polygon_mm": poly,
@@ -1692,8 +1760,154 @@ def build_stage1_box_geometry(
             "height": measured_H_mm,
             "pivot_position": piv,
             "fold_sign": sign,
+            "glue_offset": 0.0,
+        }
+        main_panels_map[pid] = panel_dict
+
+    glue_panel_dict = None
+    if glue_idx is not None:
+        idx = glue_idx
+        pid = "glue"
+        x0_mm = pt_to_mm_x(all_x[idx])
+        x1_mm = pt_to_mm_x(all_x[idx + 1])
+        w_mm = x1_mm - x0_mm
+        poly = Polygon([(x0_mm, 0.0), (x1_mm, 0.0), (x1_mm, measured_H_mm), (x0_mm, measured_H_mm)])
+
+        main_panels_order = [p for p in panel_order if p != "glue"]
+        if glue_idx == 0:
+            glue_parent_id = panel_order[1]
+            glue_neighbour_id = panel_order[-1]
+        else:
+            glue_parent_id = panel_order[-2]
+            glue_neighbour_id = panel_order[0]
+
+        def _get_T_main(mid: str) -> np.ndarray:
+            p_data = main_panels_map[mid]
+            if p_data["parent"] is None:
+                return np.eye(4, dtype=float)
+            p_t = _get_T_main(p_data["parent"])
+            piv_pt = np.array(p_data["pivot_position"], dtype=float)
+            sgn = float(p_data["fold_sign"])
+            th = sgn * (np.pi / 2.0)
+            c, s = np.cos(th), np.sin(th)
+            rot = np.array([
+                [c, 0.0, s, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [-s, 0.0, c, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ], dtype=float)
+            tr = np.array([
+                [1.0, 0.0, 0.0, piv_pt[0]],
+                [0.0, 1.0, 0.0, piv_pt[1]],
+                [0.0, 0.0, 1.0, piv_pt[2]],
+                [0.0, 0.0, 0.0, 1.0],
+            ], dtype=float)
+            return p_t @ tr @ rot
+
+        def _get_corners_main(mid: str) -> np.ndarray:
+            p_data = main_panels_map[mid]
+            x0_l, x1_l = float(p_data["x0"]), float(p_data["x1"])
+            h_l = float(p_data["height"])
+            pts_l = np.array([
+                [x0_l, 0.0, 0.0, 1.0],
+                [x1_l, 0.0, 0.0, 1.0],
+                [x1_l, h_l, 0.0, 1.0],
+                [x0_l, h_l, 0.0, 1.0],
+            ], dtype=float)
+            return (_get_T_main(mid) @ pts_l.T).T[:, :3]
+
+        all_main_pts = np.vstack([_get_corners_main(mid) for mid in main_panels_order])
+        c_box_main = 0.5 * (all_main_pts.min(axis=0) + all_main_pts.max(axis=0))
+
+        neigh_pts = _get_corners_main(glue_neighbour_id)
+        c_neigh = neigh_pts.mean(axis=0)
+        v1_n = neigh_pts[1] - neigh_pts[0]
+        v2_n = neigh_pts[3] - neigh_pts[0]
+        n_raw = np.cross(v1_n, v2_n)
+        n_unit = n_raw / np.linalg.norm(n_raw)
+        n_in = n_unit if np.dot(n_unit, c_box_main - c_neigh) > 0 else -n_unit
+
+        parent_p_data = main_panels_map[glue_parent_id]
+        if glue_idx < panel_order.index(glue_parent_id):
+            x_hinge = float(parent_p_data["x0"])
+            glue_local_x0, glue_local_x1 = -w_mm, 0.0
+        else:
+            x_hinge = float(parent_p_data["x1"])
+            glue_local_x0, glue_local_x1 = 0.0, w_mm
+
+        T_parent = _get_T_main(glue_parent_id)
+        hinge_world = (T_parent @ np.array([x_hinge, 0.0, 0.0, 1.0], dtype=float))[:3]
+        trans_piv = np.array([
+            [1.0, 0.0, 0.0, x_hinge],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ], dtype=float)
+
+        best_sign = None
+        free_x = glue_local_x0 if abs(glue_local_x0) > 1e-3 else glue_local_x1
+        for candidate_sign in [1.0, -1.0]:
+            th = candidate_sign * (np.pi / 2.0)
+            c, s = np.cos(th), np.sin(th)
+            rot_cand = np.array([
+                [c, 0.0, s, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [-s, 0.0, c, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ], dtype=float)
+            T_glue_cand = T_parent @ trans_piv @ rot_cand
+            free_edge_world = (T_glue_cand @ np.array([free_x, 0.0, 0.0, 1.0], dtype=float))[:3]
+            flap_n_world = (T_glue_cand @ np.array([0.0, 0.0, 1.0, 0.0], dtype=float))[:3]
+
+            is_parallel = abs(abs(np.dot(flap_n_world, n_in)) - 1.0) < 1e-3
+            points_inward = np.dot(free_edge_world - hinge_world, c_neigh - hinge_world) > 0
+            if is_parallel and points_inward:
+                best_sign = candidate_sign
+                break
+
+        if best_sign is None:
+            best_sign = 1.0 if glue_idx > front_idx else -1.0
+
+        th_final = best_sign * (np.pi / 2.0)
+        c_f, s_f = np.cos(th_final), np.sin(th_final)
+        rot_glue_final = np.array([
+            [c_f, 0.0, s_f, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [-s_f, 0.0, c_f, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ], dtype=float)
+        T_glue_0 = T_parent @ trans_piv @ rot_glue_final
+        c_glue_0 = (T_glue_0 @ np.array([0.5 * (glue_local_x0 + glue_local_x1), 0.5 * measured_H_mm, 0.0, 1.0], dtype=float))[:3]
+
+        delta_target = 0.20
+        d_0 = float(np.dot(n_in, c_glue_0 - c_neigh))
+        Delta = delta_target - d_0
+
+        dx_world = (T_parent @ np.array([-1.0, 0.0, 0.0, 0.0], dtype=float))[:3]
+        denom = float(np.dot(n_in, dx_world))
+        glue_off = (Delta / denom) if abs(denom) > 1e-6 else 0.0
+
+        glue_panel_dict = {
+            "id": pid,
+            "parent": glue_parent_id,
+            "polygon_mm": poly,
+            "bbox_mm": _poly_bbox_mm(poly),
+            "hinge_p0": (x0_mm, 0.0),
+            "hinge_p1": (x0_mm, measured_H_mm),
+            "x0": glue_local_x0,
+            "x1": glue_local_x1,
+            "width": w_mm,
+            "height": measured_H_mm,
+            "pivot_position": [x_hinge, 0.0, 0.0],
+            "fold_sign": best_sign,
             "glue_offset": glue_off,
-        })
+        }
+
+    for pid in panel_order:
+        if pid == "glue" and glue_panel_dict is not None:
+            body_panels.append(glue_panel_dict)
+        elif pid in main_panels_map:
+            body_panels.append(main_panels_map[pid])
 
     # Extract real flaps from Die cut lines
     flaps = _extract_real_flap_polygons(body_panels, red_lines_mm, green_lines_mm, scale_pt_per_mm, measured_H_mm, measured_D_mm)
@@ -1959,8 +2173,10 @@ def build_hierarchy(panels: List[Dict[str, Any]], flip_direction: bool = False) 
         panel_id = panel["id"]
         panel_coords = list(panel["geom"].exterior.coords)
         points = [[float(x), float(y)] for x, y in panel_coords[:-1]]
-        center_x = sum(point[0] for point in points) / max(1, len(points))
-        center_y = sum(point[1] for point in points) / max(1, len(points))
+        if not points:
+            raise ValueError(f"Panel {panel_id} has no boundary coordinates.")
+        center_x = sum(point[0] for point in points) / len(points)
+        center_y = sum(point[1] for point in points) / len(points)
         centered = [[x - center_x, y - center_y] for x, y in points]
 
         # Normalize UVs from the panel's local PDF coordinates.
@@ -1968,8 +2184,12 @@ def build_hierarchy(panels: List[Dict[str, Any]], flip_direction: bool = False) 
         ys = [point[1] for point in points]
         min_x, max_x = min(xs), max(xs)
         min_y, max_y = min(ys), max(ys)
-        range_x = max(max_x - min_x, 0.0001)
-        range_y = max(max_y - min_y, 0.0001)
+        range_x = max_x - min_x
+        range_y = max_y - min_y
+        if range_x <= 0 or math.isnan(range_x):
+            raise ValueError(f"Invalid X coordinate range for panel {panel_id} UV mapping: {range_x}. Must be positive.")
+        if range_y <= 0 or math.isnan(range_y):
+            raise ValueError(f"Invalid Y coordinate range for panel {panel_id} UV mapping: {range_y}. Must be positive.")
         uvs = []
         for x, y in points:
             u = (x - min_x) / range_x
@@ -2021,6 +2241,8 @@ def extract_panel_textures(box: Dict[str, Any], page: fitz.Page, dpi: int = 200)
 
     Converts mm bounding boxes back to page pixel coordinates using scale_pt_per_mm and origin_pt.
     """
+    if dpi <= 0 or math.isnan(dpi):
+        raise ValueError(f"Invalid dpi in extract_panel_textures: {dpi}. Must be positive.")
     zoom = dpi / 72.0
     pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
     page_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
@@ -2102,7 +2324,10 @@ def build_stage2_body_panel_model(box: Dict[str, Any], page: fitz.Page | None = 
     D_mm = float(box.get("D_mm", 0.0))
     W_mm = float(box.get("W_mm", 0.0))
     H_mm = float(box.get("H_mm", 0.0))
-    scale = 4.0 / max(D_mm, W_mm, H_mm, 1.0)
+    max_dim = max(D_mm, W_mm, H_mm, 1.0)
+    if max_dim <= 0 or math.isnan(max_dim):
+        raise ValueError(f"Invalid max dimension for 3D model scale: {max_dim}. Must be positive.")
+    scale = 4.0 / max_dim
 
     textures: Dict[str, str] = {}
     if page is not None:
@@ -2154,7 +2379,10 @@ def compute_stage2_numpy_box_bounds(model: Dict[str, Any], fold_progress: float 
     panel_by_id = {panel["id"]: panel for panel in panels}
 
     def remap_p(p: float, start: float, end: float) -> float:
-        return float(np.clip((p - start) / (end - start), 0.0, 1.0))
+        span = end - start
+        if abs(span) < 1e-9 or math.isnan(span):
+            raise ValueError(f"Invalid interpolation span in remap_p: {span}. Must be non-zero.")
+        return float(np.clip((p - start) / span, 0.0, 1.0))
 
     p_wall = remap_p(fold_progress, 0.0, 0.5) if flaps else fold_progress
     p_dust = remap_p(fold_progress, 0.5, 0.7)
@@ -2346,7 +2574,10 @@ def compute_panel_outward_normals(model: Dict[str, Any], fold_progress: float = 
         panel_centers[pid] = w_corners.mean(axis=0)
         local_n = np.array([0.0, 0.0, -1.0 if pid == "glue" else 1.0, 0.0], dtype=float)
         n = (T @ local_n)[:3]
-        panel_normals[pid] = n / np.linalg.norm(n)
+        n_norm = float(np.linalg.norm(n))
+        if n_norm < 1e-9 or math.isnan(n_norm):
+            raise ValueError(f"Cannot normalize zero or NaN normal vector for panel {pid}: {n}")
+        panel_normals[pid] = n / n_norm
 
     pts = np.asarray(all_pts, dtype=float)
     box_center = (pts.min(axis=0) + pts.max(axis=0)) / 2.0
@@ -2378,7 +2609,10 @@ def compute_flap_outward_normals(model: Dict[str, Any], fold_progress: float = 1
     flap_by_id = {flap["id"]: flap for flap in flaps}
 
     def remap_p(p: float, start: float, end: float) -> float:
-        return float(np.clip((p - start) / (end - start), 0.0, 1.0))
+        span = end - start
+        if abs(span) < 1e-9 or math.isnan(span):
+            raise ValueError(f"Invalid interpolation span in remap_p: {span}. Must be non-zero.")
+        return float(np.clip((p - start) / span, 0.0, 1.0))
 
     def get_transforms(prog: float, is_flipped: bool):
         p_wall = remap_p(prog, 0.0, 0.5)
@@ -2457,7 +2691,10 @@ def compute_flap_outward_normals(model: Dict[str, Any], fold_progress: float = 1
         T_now = flapT_now(fid)
         c_now = (T_now @ local_pts.T).T[:, :3].mean(axis=0)
         n = (T_now @ np.array([0.0, 0.0, 1.0, 0.0], dtype=float))[:3]
-        n = n / np.linalg.norm(n)
+        n_norm = float(np.linalg.norm(n))
+        if n_norm < 1e-9 or math.isnan(n_norm):
+            raise ValueError(f"Cannot normalize zero or NaN normal vector for flap {fid}: {n}")
+        n = n / n_norm
 
         disp = c_now - box_center
         dot = float(np.dot(n, disp))
@@ -2856,22 +3093,26 @@ def make_viewer_html(model: Dict[str, Any], flip: bool = False) -> str:
 
             const frontWidth = panelWidth('front');
 
+            // Pass 1: Create all panel nodes
             panelList.forEach(function(panel) {
               if (!panel || typeof panel.id === 'undefined' || typeof panel.x0 === 'undefined' || typeof panel.x1 === 'undefined' || typeof panel.height === 'undefined') {
                 throw new Error('Malformed panel data: ' + JSON.stringify(panel));
               }
-              if (panel.id === 'front') {
-                const frontNode = createPanelNode(panel);
-                wrapper.add(frontNode);
+              createPanelNode(panel);
+            });
+
+            // Pass 2: Connect scene graph hierarchy
+            panelList.forEach(function(panel) {
+              const node = panelNodes[panel.id];
+              if (panel.id === rootId) {
+                wrapper.add(node);
                 return;
               }
-
               const parentId = panel.parent || rootId;
               const parentNode = panelNodes[parentId] || wrapper;
-              const pivot = createPanelNode(panel);
               const piv = panel.pivot_position || [0, 0, 0];
-              pivot.position.set(piv[0] * scale, piv[1] * scale, piv[2] * scale);
-              parentNode.add(pivot);
+              node.position.set(piv[0] * scale, piv[1] * scale, piv[2] * scale);
+              parentNode.add(node);
             });
 
             // Flaps
@@ -3151,6 +3392,21 @@ def main() -> None:
         pdf_bytes = uploaded_file.getvalue()
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         page = doc[0]
+
+        # Check before any geometry that the PDF has at least 1 Fold-layer and 1 Die-layer vector stroke (after filtering)
+        lines = extract_structural_lines(page, doc=doc, min_length=0)
+        green_lines = [entry for entry in lines if entry.get("kind") == "crease" and entry.get("geom") is not None]
+        red_lines = [entry for entry in lines if entry.get("kind") == "cut" and entry.get("geom") is not None]
+        scale_est = 72.0 / 25.4
+        cg, cr, _ = filter_structural_linework(green_lines, red_lines, scale_est, page.rect.height)
+        if len(cg) < 1 or len(cr) < 1:
+            n_paths = len(page.get_drawings())
+            m_blocks = len(page.get_text("blocks"))
+            st.error(
+                f"No Fold/Die die-line found in this PDF. It contains {n_paths} vector paths, {m_blocks} text blocks. "
+                "Upload a die-line PDF exported with 'Fold' (crease) and 'Die' (cut) spot colours/layers."
+            )
+            return
 
         parsed_dims = parse_dimensions_from_filename(uploaded_file.name)
         measured_dims = measure_pdf_nominal_dims(page, doc)
