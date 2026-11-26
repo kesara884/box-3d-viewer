@@ -25,21 +25,21 @@ st.set_page_config(page_title="3D Packaging Box Preview", layout="wide")
 st.markdown(
     """
     <style>
-    /* Hide top-right Fork button, GitHub icon, and hamburger menu */
-    [data-testid="stToolbar"],
-    [data-testid="stHeader"],
+    /* Keep the top-right 3-dot menu (MainMenu), hide ONLY Fork & GitHub icon */
+    [data-testid="stToolbarActions"],
     [data-testid="stAppDeployButton"],
     .stAppDeployButton,
-    header {
+    a[href*="github.com"] {
         display: none !important;
         visibility: hidden !important;
     }
 
-    /* Hide bottom-right creator profile avatar & Streamlit badge */
+    /* Hide bottom-right creator profile pic & red Streamlit badge */
     [data-testid="stStatusWidget"],
-    .viewerBadge_container__r5tak,
-    .styles_viewerBadge__CvC9N,
     div[class*="viewerBadge"],
+    div[class*="StatusWidget"],
+    a[href*="share.streamlit.io"],
+    a[href*="streamlit.io/cloud"],
     footer {
         display: none !important;
         visibility: hidden !important;
